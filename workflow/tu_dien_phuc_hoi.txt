@@ -1,0 +1,43 @@
+# Từ điển khôi phục tiếng Việt cho báo cáo .xls bị mất dấu (mỗi dòng 1 từ/cụm từ ĐÚNG, có thể thêm tùy ý).
+# Cụm nhiều từ được ưu tiên hơn từ đơn để phân biệt (vd: Châu Đốc / Đức Hòa).
+Tiệm ăn sáng
+Trạm
+Châu Đốc
+Nguyễn Huệ
+Nguyễn Khuyến
+Bắc Liêu
+Trưng Vương
+Vũng Tàu
+Phan Thiết
+Trần Phú
+Gò Dầu
+Ninh Thuận
+Mỹ Tho
+Cần Thơ
+Hùng Vương
+Phan Đình Phùng
+Đà Lạt
+Lâm Viên
+Cái Răng
+Đức Hòa
+Hậu Nghĩa
+Cần Giuộc
+Tân Đông Hiệp
+Thủ Đức
+T.Đức
+Võ Trường Toản
+Thuận An
+Thuận Giao
+Bình Đa
+Biên Hòa
+Bình Dương
+Bình Chuẩn
+Thạnh Bình
+Lái Thiêu
+Đông Chiêu
+Đông Hòa
+Vĩnh Kim
+Tiền Giang
+Quy Nhơn
+Long An
+Tân An
