@@ -108,3 +108,103 @@ class Restorer:
             best = c.most_common(1)[0][0]
             return self._case_like(w, best)
         return re.sub(r"[^\W\d_?]*\?[^\W\d_]*(?:\?[^\W\d_]*)*", fix, out)
+
+
+# ======================================================================================
+# CHUYỂN MÃ FONT TIẾNG VIỆT CŨ -> UNICODE (NFC)
+# ======================================================================================
+# Hỗ trợ: TCVN3 (ABC / .Vn*), VNI-Windows, UTF-8 bị đọc nhầm thành cp1252 (mojibake),
+# thực thể HTML (&#7879; / &aacute;), Unicode dạng tổ hợp (NFD / CP1258) -> NFC.
+# Chưa hỗ trợ: VISCII, VPS, BK-HCM (cần bảng mã riêng, chưa có nguồn đối chiếu đáng tin).
+import html as _html
+
+# --- TCVN3 (ABC): byte -> chữ Unicode (byte được lấy qua cp1252 của ký tự đọc ra từ .xls)
+_TCVN3_PAIRS = (
+    "\xb5à \xb6ả \xb7ã \xb8á \xb9ạ \xa8ă \xbbằ \xbcẳ \xbdẵ \xbeắ \xc6ặ "
+    "\xa9â \xc7ầ \xc8ẩ \xc9ẫ \xcaấ \xcbậ \xaeđ "
+    "\xccè \xceẻ \xcfẽ \xd0é \xd1ẹ \xaaê \xd2ề \xd3ể \xd4ễ \xd5ế \xd6ệ "
+    "\xd7ì \xd8ỉ \xdcĩ \xddí \xdeị "
+    "\xdfò \xe1ỏ \xe2õ \xe3ó \xe4ọ \xabô \xe5ồ \xe6ổ \xe7ỗ \xe8ố \xe9ộ "
+    "\xacơ \xeaờ \xebở \xecỡ \xedớ \xeeợ "
+    "\xefù \xf1ủ \xf2ũ \xf3ú \xf4ụ \xadư \xf5ừ \xf6ử \xf7ữ \xf8ứ \xf9ự "
+    "\xfaỳ \xfbỷ \xfcỹ \xfdý \xfeỵ "
+    "\xa1Ă \xa2Â \xa3Ê \xa4Ô \xa5Ơ \xa6Ư \xa7Đ"
+)
+_TCVN3 = {}
+for _p in _TCVN3_PAIRS.split():
+    _TCVN3[_p[0].encode("latin-1").decode("cp1252", "replace")] = _p[1]
+_TCVN3_SIG = set("µ¶·¸¹¨©ª«¬\xad®")   # ký tự đặc trưng của TCVN3 (không có trong chữ Việt cp1252 bị mất dấu)
+
+# --- VNI-Windows: nguyên âm + ký tự dấu (2 ký tự) hoặc 1 ký tự
+_VNI_LOWER = {
+    "à": "aø", "á": "aù", "ả": "aû", "ã": "aõ", "ạ": "aï",
+    "ă": "aê", "ằ": "aè", "ắ": "aé", "ẳ": "aú", "ẵ": "aü", "ặ": "aë",
+    "â": "aâ", "ầ": "aà", "ấ": "aá", "ẩ": "aå", "ẫ": "aã", "ậ": "aä",
+    "è": "eø", "é": "eù", "ẻ": "eû", "ẽ": "eõ", "ẹ": "eï",
+    "ê": "eâ", "ề": "eà", "ế": "eá", "ể": "eå", "ễ": "eã", "ệ": "eä",
+    "ì": "ì", "í": "í", "ỉ": "æ", "ĩ": "ó", "ị": "ò",
+    "ò": "oø", "ó": "où", "ỏ": "oû", "õ": "oõ", "ọ": "oï",
+    "ô": "oâ", "ồ": "oà", "ố": "oá", "ổ": "oå", "ỗ": "oã", "ộ": "oä",
+    "ơ": "ô", "ờ": "ôø", "ớ": "ôù", "ở": "ôû", "ỡ": "ôõ", "ợ": "ôï",
+    "ù": "uø", "ú": "uù", "ủ": "uû", "ũ": "uõ", "ụ": "uï",
+    "ư": "ö", "ừ": "öø", "ứ": "öù", "ử": "öû", "ữ": "öõ", "ự": "öï",
+    "ỳ": "yø", "ý": "yù", "ỷ": "yû", "ỹ": "yõ", "ỵ": "î",
+    "đ": "ñ",
+}
+_VNI = {}
+for _u, _v in _VNI_LOWER.items():
+    _VNI[_v] = _u
+    _VNI[_v.upper()] = _u.upper()
+_VNI_KEYS = sorted(_VNI, key=len, reverse=True)
+_VNI_RE = re.compile("|".join(re.escape(k) for k in _VNI_KEYS))
+_VNI_SIG = set("ñöÑÖîÎæÆ")
+_MOJIBAKE_RE = re.compile(r"[ÂÃÄÅáâ][\u0080-\u00bf\u0152\u0153\u0160\u0161\u0178\u017d\u017e\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]")
+
+
+def _nonascii(texts, limit=20000):
+    out = []
+    for t in texts:
+        if isinstance(t, str):
+            out.extend(ch for ch in t if ord(ch) > 127)
+            if len(out) > limit:
+                break
+    return out
+
+
+def detect_encoding(texts):
+    """Đoán bảng mã của cả cột văn bản: 'tcvn3' | 'vni' | 'unicode' (đã đúng hoặc chỉ mất dấu '?')."""
+    chars = _nonascii(texts)
+    if not chars:
+        return "unicode"
+    n = len(chars)
+    if sum(c in _TCVN3_SIG for c in chars) / n >= 0.2:
+        return "tcvn3"
+    if sum(c in _VNI_SIG for c in chars) >= 3 and sum(c in _VNI_SIG for c in chars) / n >= 0.1:
+        return "vni"
+    return "unicode"
+
+
+def convert_tcvn3(s):
+    return "".join(_TCVN3.get(ch, ch) for ch in s)
+
+
+def convert_vni(s):
+    return _VNI_RE.sub(lambda m: _VNI[m.group(0)], s)
+
+
+def to_unicode(s, enc="unicode"):
+    """Chuyển 1 chuỗi về Unicode NFC theo bảng mã `enc` (từ detect_encoding)."""
+    if not isinstance(s, str) or not s:
+        return s
+    if "&" in s and re.search(r"&#?\w+;", s):
+        s = _html.unescape(s)
+    if enc == "tcvn3":
+        s = convert_tcvn3(s)
+    elif enc == "vni":
+        s = convert_vni(s)
+    elif _MOJIBAKE_RE.search(s):          # UTF-8 bị đọc thành cp1252
+        try:
+            s = s.encode("cp1252").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return unicodedata.normalize("NFC", s)
