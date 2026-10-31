@@ -20,7 +20,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from viet_restore import Restorer, looks_like_tcvn3  # noqa: E402
+from viet_restore import Restorer, detect_encoding, to_unicode  # noqa: E402
 from collections import OrderedDict, defaultdict
 
 import openpyxl
@@ -81,11 +81,22 @@ def load_weekly_report(path):
     """Đọc báo cáo thô .xls -> (DataFrame chi tiết, pivot {mã KH: {mã HH: tổng SL}}).
     Bỏ các dòng 'Total'. Tên cột đặt theo vị trí vì file .xls hay lỗi mã hóa tiếng Việt."""
     df = pd.read_excel(path, header=0)
-    if df.shape[1] < 11:
-        raise ValueError("File báo cáo tuần phải có >= 11 cột (Ngày CT, Số CT, Mã KH, Tên KH, Địa chỉ, "
-                         "Mã HH, Tên HH, ĐVT, Số lượng, Giá, Số tiền)")
-    df = df.iloc[:, :11]
-    df.columns = ["ngay", "so_ct", "ma_kh", "ten_kh", "dia_chi", "ma_hh", "ten_hh", "dvt", "sl", "gia", "tien"]
+    # Định dạng thô thứ 2 (header không dấu): map sang các cột chuẩn của quy trình
+    alt_map = {"ten_nhom": "ten_kh", "chi_tieu": "ma_kh", "ma_vt": "ma_hh", "ten_vt": "ten_hh",
+               "dv_tv": "dvt", "dv_vt": "dvt", "so_luong": "sl", "thanh_tien": "tien"}
+    norm = {c: str(c).strip().lower() for c in df.columns}
+    if {"chi_tieu", "ma_vt", "so_luong"} <= set(norm.values()):
+        df = df.rename(columns={c: alt_map[n] for c, n in norm.items() if n in alt_map})
+        for col in ("ngay", "so_ct", "dia_chi", "gia", "dvt", "tien"):
+            if col not in df.columns:
+                df[col] = None
+        df = df[["ngay", "so_ct", "ma_kh", "ten_kh", "dia_chi", "ma_hh", "ten_hh", "dvt", "sl", "gia", "tien"]]
+    else:
+        if df.shape[1] < 11:
+            raise ValueError("File báo cáo tuần phải có >= 11 cột (Ngày CT, Số CT, Mã KH, Tên KH, Địa chỉ, "
+                             "Mã HH, Tên HH, ĐVT, Số lượng, Giá, Số tiền)")
+        df = df.iloc[:, :11]
+        df.columns = ["ngay", "so_ct", "ma_kh", "ten_kh", "dia_chi", "ma_hh", "ten_hh", "dvt", "sl", "gia", "tien"]
     df = df[df["ma_kh"].notna() & df["ma_hh"].notna()].copy()
     df["ma_kh"] = df["ma_kh"].astype(str).str.strip()
     df["ma_hh"] = df["ma_hh"].apply(lambda v: str(int(v)) if isinstance(v, (int, float)) else str(v).strip())
@@ -116,9 +127,19 @@ NGOAI_DM = "Ngoài danh mục"
 
 def fix_vietnamese(df, master_path, master):
     """Sửa chữ Việt bị mất dấu ('?') trong báo cáo thô (xem viet_restore.py). Giữ tên gốc ở cột *_goc."""
-    texts = list(df["ten_kh"].dropna().unique())[:5000]
-    if looks_like_tcvn3(texts):
-        print("CẢNH BÁO: dữ liệu có vẻ là TCVN3 - cần bảng chuyển mã riêng (chưa hỗ trợ).")
+    cols = ("ten_kh", "ten_hh", "dvt")
+    df["ten_kh_goc"] = df["ten_kh"]
+    df["ten_hh_goc"] = df["ten_hh"]
+    sample = []
+    for c in cols:
+        sample += list(df[c].dropna().unique())[:5000]
+    enc = detect_encoding(sample)
+    if enc != "unicode":
+        print(f"Phát hiện bảng mã font cũ: {enc.upper()} -> chuyển sang Unicode")
+    for c in cols:
+        df[c] = df[c].map(lambda v: to_unicode(v, enc))
+    if enc != "unicode":
+        return df      # đã chuyển mã đầy đủ dấu, không còn '?' cần khôi phục
     harvest = [t for _, t in master.values()]
     wb = openpyxl.load_workbook(master_path, read_only=True, data_only=True)
     for name in ("Dữ liệu thô", "ChiTiet", "SOP_Banh", "SOP_Nuoc", "QuyDoi_DonVi", "Tổng hợp T5"):
@@ -127,9 +148,7 @@ def fix_vietnamese(df, master_path, master):
                 harvest += [v for v in row if isinstance(v, str)]
     wb.close()
     rs = Restorer(harvest)
-    df["ten_kh_goc"] = df["ten_kh"]
     df["ten_kh"] = df["ten_kh"].map(rs.restore)
-    df["ten_hh_goc"] = df["ten_hh"]
     df["ten_hh"] = df["ten_hh"].map(rs.restore)
     return df
 
