@@ -138,7 +138,7 @@ def fix_vietnamese(df, master_path, master):
         print(f"Phát hiện bảng mã font cũ: {enc.upper()} -> chuyển sang Unicode")
     for c in cols:
         df[c] = df[c].map(lambda v: to_unicode(v, enc))
-    if enc != "unicode":
+    if enc not in ("unicode", "vnsans"):
         return df      # đã chuyển mã đầy đủ dấu, không còn '?' cần khôi phục
     harvest = [t for _, t in master.values()]
     wb = openpyxl.load_workbook(master_path, read_only=True, data_only=True)
@@ -148,8 +148,9 @@ def fix_vietnamese(df, master_path, master):
                 harvest += [v for v in row if isinstance(v, str)]
     wb.close()
     rs = Restorer(harvest)
-    df["ten_kh"] = df["ten_kh"].map(rs.restore)
-    df["ten_hh"] = df["ten_hh"].map(rs.restore)
+    is_vns = enc == "vnsans"
+    for c in cols:
+        df[c] = df[c].map(lambda v: rs.restore(v, vnsans=is_vns))
     return df
 
 

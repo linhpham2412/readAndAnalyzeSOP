@@ -29,9 +29,18 @@ else:
 TCVN3_HINT = set("µ¸¹¶·¨»¼½¾Æ®ÌÎÏÐÑªÒÓÔÕÖ×ØÜÝÞß")
 
 
+_VNSANS_KEEP = set("àýÂãÃ")
+_CP1252_VOWELS = set("áâêôíóìùÁÂÊÔÍÓÌÙ")
+
+
 def lossy(s):
     """Dạng bị hỏng của chuỗi khi lưu cp1252: ký tự ngoài bảng mã -> '?'."""
     return s.encode("cp1252", errors="replace").decode("cp1252").lower()
+
+
+def lossy_vnsans(s):
+    """Dạng bị hỏng của chuỗi khi xuất font Vn-Sans-Serif (chỉ giữ ASCII + à, ý, Â, ã)."""
+    return "".join(c if (ord(c) < 128 or c in _VNSANS_KEEP) else "?" for c in s).lower()
 
 
 def looks_like_tcvn3(texts, sample=2000):
@@ -48,8 +57,11 @@ def looks_like_tcvn3(texts, sample=2000):
 
 class Restorer:
     def __init__(self, extra_texts=()):
-        self.phrases = {}   # khóa hỏng -> cụm đúng (nhiều từ)
-        self.words = {}     # khóa hỏng -> Counter các từ đúng
+        self.phrases = {}          # khóa hỏng cp1252 -> cụm đúng (nhiều từ)
+        self.vnsans_phrases = {}   # khóa hỏng Vn-Sans-Serif -> (boost, cụm đúng)
+        self.words = {}            # khóa hỏng cp1252 -> Counter các từ đúng
+        self.vnsans_words = {}     # khóa hỏng Vn-Sans-Serif -> Counter các từ đúng
+        self._cache = {}
         phrases = []
         if os.path.exists(DICT_FILE):
             for line in open(DICT_FILE, encoding="utf-8"):
@@ -58,20 +70,28 @@ class Restorer:
                     phrases.append(line)
         for line in phrases:
             self._add(line, boost=1000)
-        for t in extra_texts:
-            if isinstance(t, str):
-                self._add(re.sub(r"\([^)]*\)", " ", t))
+        for t in set(t for t in extra_texts if isinstance(t, str)):
+            self._add(re.sub(r"\([^)]*\)", " ", t))
 
     def _add(self, text, boost=1):
         text = unicodedata.normalize("NFC", text)
         toks = re.findall(r"[^\W\d_]+(?:\.[^\W\d_]+)*", text)
-        if len(toks) > 1 and boost >= 1000:
-            self.phrases[lossy(" ".join(toks))] = " ".join(toks)
+        if len(toks) > 1:
+            joined = " ".join(toks)
+            if boost >= 1000:
+                self.phrases[lossy(joined)] = joined
+            vk = lossy_vnsans(joined)
+            if "?" in vk:
+                prev = self.vnsans_phrases.get(vk)
+                if prev is None or boost > prev[0]:
+                    self.vnsans_phrases[vk] = (boost, joined)
         for w in toks:
-            if "?" in lossy(w) or lossy(w) != w.lower():
-                self.words.setdefault(lossy(w), Counter())[w.lower()] += boost
-            else:
-                self.words.setdefault(lossy(w), Counter())[w.lower()] += 0
+            lw = w.lower()
+            k1 = lossy(w)
+            self.words.setdefault(k1, Counter())[lw] += boost if ("?" in k1 or k1 != lw) else 0
+            k2 = lossy_vnsans(w)
+            if "?" in k2:
+                self.vnsans_words.setdefault(k2, Counter())[lw] += boost
         return toks
 
     @staticmethod
@@ -83,31 +103,48 @@ class Restorer:
             return new.upper()
         return new
 
-    def restore(self, text):
+    def restore(self, text, vnsans=False):
         if not isinstance(text, str) or "?" not in text:
             return text
+        cache_key = (text, vnsans)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         out = unicodedata.normalize("NFC", text)
         low = out.lower()
-        # 1. cụm từ (dài trước)
-        for key in sorted(self.phrases, key=len, reverse=True):
-            if "?" not in key:
-                continue
-            pat = r"(?<![^\W\d_])" + re.escape(key).replace(r"\ ", r"\s+") + r"(?![^\W\d_])"
-            for m in list(re.finditer(pat, low))[::-1]:
-                rep = self._case_like(out[m.start():m.end()], self.phrases[key])
-                out = out[:m.start()] + rep + out[m.end():]
-                low = out.lower()
+        # 1. cụm từ (dài trước): khi vnsans=True ưu tiên cụm Vn-Sans-Serif
+        phrase_tables = (
+            (self.vnsans_phrases, self.phrases) if vnsans else (self.phrases, self.vnsans_phrases)
+        )
+        for tbl in phrase_tables:
+            is_vns = tbl is self.vnsans_phrases
+            if not is_vns or "?" in out:
+                for key in sorted(tbl, key=len, reverse=True):
+                    if "?" not in key or (is_vns and key not in low):
+                        continue
+                    pat = r"(?<![^\W\d_])" + re.escape(key).replace(r"\ ", r"\s+") + r"(?![^\W\d_])"
+                    val = tbl[key][1] if is_vns else tbl[key]
+                    for m in list(re.finditer(pat, low))[::-1]:
+                        rep = self._case_like(out[m.start():m.end()], val)
+                        out = out[:m.start()] + rep + out[m.end():]
+                        low = out.lower()
         # 2. từng từ
         def fix(m):
             w = m.group(0)
             if "?" not in w:
                 return w
-            c = self.words.get(w.lower())
+            lw = w.lower()
+            c = (
+                (self.vnsans_words.get(lw) or self.words.get(lw))
+                if vnsans
+                else (self.words.get(lw) or self.vnsans_words.get(lw))
+            )
             if not c:
                 return w
             best = c.most_common(1)[0][0]
             return self._case_like(w, best)
-        return re.sub(r"[^\W\d_?]*\?[^\W\d_]*(?:\?[^\W\d_]*)*", fix, out)
+        res = re.sub(r"[^\W\d_?]*\?[^\W\d_]*(?:\?[^\W\d_]*)*", fix, out)
+        self._cache[cache_key] = res
+        return res
 
 
 # ======================================================================================
@@ -172,7 +209,7 @@ def _nonascii(texts, limit=20000):
 
 
 def detect_encoding(texts):
-    """Đoán bảng mã của cả cột văn bản: 'tcvn3' | 'vni' | 'unicode' (đã đúng hoặc chỉ mất dấu '?')."""
+    """Đoán bảng mã của cả cột văn bản: 'tcvn3' | 'vni' | 'vnsans' | 'unicode'."""
     chars = _nonascii(texts)
     if not chars:
         return "unicode"
@@ -181,6 +218,9 @@ def detect_encoding(texts):
         return "tcvn3"
     if sum(c in _VNI_SIG for c in chars) >= 3 and sum(c in _VNI_SIG for c in chars) / n >= 0.1:
         return "vni"
+    has_lossy_q = any(isinstance(t, str) and "?" in t for t in texts)
+    if has_lossy_q and any(c in ("ú", "Ú") for c in chars) and not any(c in _CP1252_VOWELS for c in chars):
+        return "vnsans"
     return "unicode"
 
 
@@ -202,6 +242,8 @@ def to_unicode(s, enc="unicode"):
         s = convert_tcvn3(s)
     elif enc == "vni":
         s = convert_vni(s)
+    elif enc == "vnsans":
+        s = s.replace("ú", "ã").replace("Ú", "Ã")
     elif _MOJIBAKE_RE.search(s):          # UTF-8 bị đọc thành cp1252
         try:
             s = s.encode("cp1252").decode("utf-8")
