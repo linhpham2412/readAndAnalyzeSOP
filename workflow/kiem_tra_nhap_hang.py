@@ -165,12 +165,56 @@ def best_name(series):
     return sorted(cnt.index, key=lambda n: (n.count("?"), -cnt[n]))[0]
 
 
-def extend_master(master, df):
-    """Thêm các KH có trong báo cáo tuần nhưng chưa có trong danh mục (Quản lý = 'Ngoài danh mục')."""
-    full = OrderedDict(master)
+def _norm_code(val):
+    if val is None:
+        return ""
+    s = str(val).strip()
+    s = re.sub(r"\s*-\s*", "-", s)
+    return s.upper()
+
+
+def load_ds_nhuong_quyen(root_dir=ROOT):
+    """Đọc bảng tra (Quản lý, Tên NQ) từ sheet 'Ds_nhuong_quyen' của templates/BC_TONG_base.xlsx."""
+    ds_map = {}
+    tpl_path = os.path.join(root_dir, "templates", "BC_TONG_base.xlsx")
+    if not os.path.isfile(tpl_path):
+        return ds_map
+    try:
+        wb = openpyxl.load_workbook(tpl_path, read_only=True, data_only=True)
+        if "Ds_nhuong_quyen" in wb.sheetnames:
+            ws = wb["Ds_nhuong_quyen"]
+            for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
+                ql, ma, ten = (list(row) + [None, None, None])[:3]
+                ma_key = _norm_code(ma)
+                ql_str = str(ql).strip() if ql is not None else ""
+                ten_str = str(ten).strip() if ten is not None else ""
+                if ma_key and ql_str and ql_str.lower() != NGOAI_DM.lower():
+                    ds_map[ma_key] = (ql_str, ten_str)
+        wb.close()
+    except Exception:
+        pass
+    return ds_map
+
+
+def extend_master(master, df, ds_map=None):
+    """Thêm các KH có trong báo cáo tuần nhưng chưa có trong danh mục; ưu tiên tra Quản lý từ Ds_nhuong_quyen."""
+    full = OrderedDict()
+    for ma, (ql, ten) in master.items():
+        if (not ql or ql == NGOAI_DM) and ds_map:
+            ds_info = ds_map.get(_norm_code(ma))
+            if ds_info and ds_info[0]:
+                ql = ds_info[0]
+                if not ten:
+                    ten = ds_info[1]
+        full[ma] = (ql, ten)
     for ma in sorted(df["ma_kh"].unique()):
         if ma not in full:
-            full[ma] = (NGOAI_DM, best_name(df.loc[df["ma_kh"] == ma, "ten_kh"]))
+            fallback_ten = best_name(df.loc[df["ma_kh"] == ma, "ten_kh"])
+            ds_info = (ds_map or {}).get(_norm_code(ma))
+            if ds_info and ds_info[0]:
+                full[ma] = (ds_info[0], ds_info[1] or fallback_ten)
+            else:
+                full[ma] = (NGOAI_DM, fallback_ten)
     return full
 
 
@@ -515,10 +559,13 @@ def sheet_nuoc(wb, results):
     ws.auto_filter.ref = f"A1:P{1 + i}"
 
 
-def sheet_unknown(wb, df, master):
+def sheet_unknown(wb, df, master, ds_map=None):
     ws = wb.create_sheet("KH ngoài danh mục")
-    unk = df[~df["ma_kh"].isin(master.keys())]
-    ws["A1"] = ("Khách hàng có trong báo cáo tuần nhưng KHÔNG có trong danh mục NQ (sheet KIỂM TRA của CHECK_2026.xlsx). "
+    known_norm = {_norm_code(k) for k in master.keys()}
+    if ds_map:
+        known_norm |= {k for k, v in ds_map.items() if v and v[0]}
+    unk = df[~df["ma_kh"].map(_norm_code).isin(known_norm)]
+    ws["A1"] = ("Khách hàng có trong báo cáo tuần nhưng KHÔNG có trong danh mục NQ (CHECK_2026.xlsx và Ds_nhuong_quyen). "
                 "Đã chèn vào các báo cáo với Quản lý = 'Ngoài danh mục'. Nếu là NQ mới -> bổ sung vào danh mục.")
     ws["A1"].font = Font(bold=True)
     _header(ws, 3, ["Mã KH", "Tên khách hàng (đã khôi phục)", "Số dòng hàng", "Tổng tiền",
@@ -582,15 +629,205 @@ def sheet_params(wb):
             _text(ws, r0 + i, j, v)
 
 
-def write_report(path, results, df, master, title_info):
+FALLBACK_KV = {
+    "F1-021": "Q7",
+    "F2-283": "Q6",
+    "F3-122": "Q9",
+    "F5-187": "Q11",
+    "FBDN-14": "Đà Nẵng",
+}
+
+
+def load_kv_map(root_dir=ROOT):
+    """Đọc bảng tra 'Khu vực / Tỉnh' từ templates/BC_TONG_base.xlsx (nếu có) + FALLBACK_KV."""
+    kv_map = {}
+    tpl_path = os.path.join(root_dir, "templates", "BC_TONG_base.xlsx")
+    if os.path.isfile(tpl_path):
+        try:
+            wb = openpyxl.load_workbook(tpl_path, read_only=True, data_only=True)
+            if "Ds_nhuong_quyen" in wb.sheetnames:
+                ws = wb["Ds_nhuong_quyen"]
+                kv_col = None
+                for c in range(1, ws.max_column + 1):
+                    h = ws.cell(1, c).value
+                    if isinstance(h, str) and "khu vực" in h.lower():
+                        kv_col = c
+                        break
+                if kv_col is not None:
+                    for row in ws.iter_rows(min_row=2, max_col=max(2, kv_col), values_only=True):
+                        ma = _norm_code(row[1] if len(row) > 1 else None)
+                        kv = row[kv_col - 1] if len(row) >= kv_col else None
+                        if ma and isinstance(kv, str) and kv.strip():
+                            kv_map[ma] = kv.strip()
+
+            if "ListNQ" in wb.sheetnames:
+                ws = wb["ListNQ"]
+                for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
+                    ma = _norm_code(row[0] if len(row) > 0 else None)
+                    kv = row[1] if len(row) > 1 else None
+                    if ma and isinstance(kv, str) and kv.strip():
+                        kv_map.setdefault(ma, kv.strip())
+
+            for sname, c_ma, c_kv in (("6. Duyên", 3, 7), ("8. Quỳnh", 2, 6)):
+                if sname not in wb.sheetnames:
+                    continue
+                ws = wb[sname]
+                in_rev = False
+                for r, row in enumerate(ws.iter_rows(min_row=2, max_col=max(c_ma, c_kv), values_only=True), start=2):
+                    v_ma = row[c_ma - 1] if len(row) >= c_ma else None
+                    if isinstance(v_ma, str) and v_ma.strip() == "Mã NQ" and r > 20:
+                        in_rev = True
+                        continue
+                    if in_rev and isinstance(v_ma, str) and "-" in v_ma:
+                        ma = _norm_code(v_ma)
+                        kv = row[c_kv - 1] if len(row) >= c_kv else None
+                        if ma and isinstance(kv, str) and kv.strip():
+                            kv_map.setdefault(ma, kv.strip())
+            wb.close()
+        except Exception:
+            pass
+    for ma, kv in FALLBACK_KV.items():
+        kv_map.setdefault(ma, kv)
+    return kv_map
+
+
+def sheet_du_lieu_tho(wb, df, pivot, results, kv_map=None):
+    """Tạo sheet 'DuLieuTho' giống 'DuLieuTho(tuan_nay)' trong BaoCaoThangNQ."""
+    ws = wb.create_sheet("DuLieuTho")
+    font_name = "Calibri"
+    font_hdr = Font(name=font_name, size=10, bold=True, color="FFFFFF")
+    font_data = Font(name=font_name, size=10, bold=False, color="1E293B")
+    font_bold = Font(name=font_name, size=10, bold=True, color="1E293B")
+
+    fill_navy = PatternFill("solid", fgColor="1F4E78", bgColor="1F4E78")
+    fill_ice = PatternFill("solid", fgColor="D9E1F2", bgColor="D9E1F2")
+    fill_zebra = PatternFill("solid", fgColor="F7F9FC", bgColor="F7F9FC")
+    fill_white = PatternFill("solid", fgColor="FFFFFF", bgColor="FFFFFF")
+
+    thin_side = Side(style="thin", color="D1D5DB")
+    med_navy = Side(style="medium", color="1F4E78")
+    double_side = Side(style="double", color="1F4E78")
+    border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    border_total = Border(left=thin_side, right=thin_side, top=med_navy, bottom=double_side)
+
+    fmt_int = "#,##0"
+    fmt_dec = "#,##0.0"
+
+    def style_cell(cell, font=font_data, fill=None, border=border_cell, align=None, num_fmt=None):
+        cell.font = font
+        if fill is not None:
+            cell.fill = fill
+        if border is not None:
+            cell.border = border
+        if align is not None:
+            cell.alignment = align
+        if num_fmt is not None:
+            cell.number_format = num_fmt
+
+    tien_num = pd.to_numeric(df["tien"], errors="coerce").fillna(0.0)
+    rev = df.assign(_tien=tien_num).groupby("ma_kh")["_tien"].sum().to_dict()
+    item_names = {hh: best_name(grp["ten_hh"]) for hh, grp in df.groupby("ma_hh")}
+
+    fixed_set = {"1001", "1004", "1003", "1002", "1214", "1200", "1203", "1201"}
+    other_codes = sorted(c for c in item_names.keys() if c not in fixed_set)
+
+    headers = [
+        "Mã NQ", "NHƯỢNG QUYỀN", "Quản lý", "Khu vực / Tỉnh",
+        "Tổng tiền gốc (VNĐ)", "Doanh thu (+4%) (VNĐ)",
+        "Hamburger (1001)", "Hotdog (1004)", "Pita (1003)", "Sandwich miếng (1002)", "Sandwich phần (÷2)",
+        "Bò thượng hạng (1214)", "Miếng gà (1200)", "Miếng tôm (1203)", "Miếng thịt (1201)",
+    ] + [f"{item_names[c]} ({c})" for c in other_codes]
+
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(1, col_idx, h)
+        style_cell(
+            c,
+            font=font_hdr,
+            fill=fill_navy,
+            align=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = (
+            62 if col_idx == 2 else (18 if col_idx in (5, 6) else (16 if col_idx <= 15 else 18))
+        )
+    ws.row_dimensions[1].height = 36
+
+    ordered_codes = sorted(pivot.keys())
+    for idx, ma in enumerate(ordered_codes, start=2):
+        r = results.get(ma, {})
+        ten = r.get("ten") or best_name(df.loc[df["ma_kh"] == ma, "ten_kh"]) or ma
+        ql = r.get("ql") or NGOAI_DM
+        kv = (kv_map or {}).get(_norm_code(ma), "Khác")
+        fill = fill_zebra if idx % 2 == 0 else fill_white
+        p_row = pivot[ma]
+
+        style_cell(ws.cell(idx, 1, ma), font=font_bold, fill=fill, align=Alignment(horizontal="center", vertical="center"))
+        style_cell(ws.cell(idx, 2, ten), font=font_data, fill=fill, align=Alignment(horizontal="left", vertical="center"))
+        style_cell(ws.cell(idx, 3, ql), font=font_data, fill=fill, align=Alignment(horizontal="center", vertical="center"))
+        style_cell(ws.cell(idx, 4, kv), font=font_data, fill=fill, align=Alignment(horizontal="center", vertical="center"))
+        style_cell(ws.cell(idx, 5, float(rev.get(ma, 0.0))), font=font_data, fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 6, f"=ROUND(E{idx}*1.04,0)"), font=font_bold, fill=fill, num_fmt=fmt_int)
+
+        style_cell(ws.cell(idx, 7, p_row.get("1001", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 8, p_row.get("1004", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 9, p_row.get("1003", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 10, p_row.get("1002", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 11, f"=J{idx}/2"), font=font_bold, fill=fill, num_fmt=fmt_dec)
+        style_cell(ws.cell(idx, 12, p_row.get("1214", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 13, p_row.get("1200", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 14, p_row.get("1203", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 15, p_row.get("1201", 0.0)), fill=fill, num_fmt=fmt_int)
+
+        for j, code in enumerate(other_codes, start=16):
+            val = p_row.get(code, 0.0)
+            style_cell(ws.cell(idx, j, val if val else 0.0), fill=fill, num_fmt=fmt_dec if val % 1 else fmt_int)
+        ws.row_dimensions[idx].height = 19
+
+    if ordered_codes:
+        tot_row = 2 + len(ordered_codes)
+        style_cell(
+            ws.cell(tot_row, 1, "TỔNG CỘNG"),
+            font=font_bold,
+            fill=fill_ice,
+            border=border_total,
+            align=Alignment(horizontal="center", vertical="center"),
+        )
+        style_cell(
+            ws.cell(tot_row, 2, f'=COUNTA(A2:A{tot_row - 1})&" cửa hàng có đơn"'),
+            font=font_bold,
+            fill=fill_ice,
+            border=border_total,
+        )
+        style_cell(ws.cell(tot_row, 3, ""), font=font_bold, fill=fill_ice, border=border_total)
+        style_cell(ws.cell(tot_row, 4, ""), font=font_bold, fill=fill_ice, border=border_total)
+        for col_idx in range(5, len(headers) + 1):
+            cl = get_column_letter(col_idx)
+            style_cell(
+                ws.cell(tot_row, col_idx, f"=SUM({cl}2:{cl}{tot_row - 1})"),
+                font=font_bold,
+                fill=fill_ice,
+                border=border_total,
+                num_fmt=fmt_int,
+            )
+        ws.row_dimensions[tot_row].height = 22
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{tot_row - 1}"
+    ws.freeze_panes = "C2"
+
+
+def write_report(path, results, df, master, title_info, pivot=None, ds_map=None):
+    if pivot is None:
+        pv = df.groupby(["ma_kh", "ma_hh"])["sl"].sum()
+        pivot = defaultdict(dict)
+        for (kh, hh), v in pv.items():
+            pivot[kh][hh] = float(v)
     wb = openpyxl.Workbook()
     sheet_summary(wb, results, title_info)
     sheet_matrix(wb, results)
     sheet_detail(wb, results)
     sheet_nuoc(wb, results)
-    n_unk = sheet_unknown(wb, df, master)
+    n_unk = sheet_unknown(wb, df, master, ds_map=ds_map)
     sheet_params(wb)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    sheet_du_lieu_tho(wb, df, pivot, results, load_kv_map(ROOT))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     wb.save(path)
     return n_unk
 
@@ -685,8 +922,9 @@ def process_report(report_path, master_path=DEFAULT_MASTER, out_path=None, per_n
     """Chạy toàn bộ quy trình kiểm tra từ file báo cáo tuần và trả về đường dẫn file output."""
     df, pivot = load_weekly_report(report_path)
     master_goc = load_master(master_path)
+    ds_map = load_ds_nhuong_quyen(ROOT)
     df = fix_vietnamese(df, master_path, master_goc)
-    master = extend_master(master_goc, df)
+    master = extend_master(master_goc, df, ds_map=ds_map)
     results = run_check(pivot, master)
 
     d0, d1 = df["ngay"].min(), df["ngay"].max()
@@ -694,14 +932,15 @@ def process_report(report_path, master_path=DEFAULT_MASTER, out_path=None, per_n
     base = os.path.splitext(os.path.basename(report_path))[0]
     out = out_path or os.path.join(DEFAULT_OUT_DIR, f"BaoCao_NhapHang_{base}.xlsx")
     out = _safe_save_path(out)
-    n_unk = write_report(out, results, df, master_goc, title)
+    n_unk = write_report(out, results, df, master_goc, title, pivot=pivot, ds_map=ds_map)
     if per_nq:
         write_per_nq(os.path.splitext(out)[0] + "_NQ", results, title)
 
     cnt = defaultdict(int)
     for r in results.values():
         cnt[r["status"]] += 1
-    print(f"{title}: {len(df)} dòng hàng, {len(pivot)} khách hàng, {len(master_goc)} NQ trong danh mục (+{len(master) - len(master_goc)} ngoài danh mục)")
+    n_from_ds = len(master) - len(master_goc) - n_unk
+    print(f"{title}: {len(df)} dòng hàng, {len(pivot)} khách hàng, {len(master_goc)} NQ trong CHECK_2026 (+{n_from_ds} từ Ds_nhuong_quyen, +{n_unk} ngoài danh mục)")
     for k, v in cnt.items():
         print(f"  {k}: {v}")
     if n_unk:
