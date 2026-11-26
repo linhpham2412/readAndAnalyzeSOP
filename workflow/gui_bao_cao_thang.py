@@ -34,16 +34,27 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 import bao_cao_thang as core  # noqa: E402
 
 
-def parse_dropped_file(raw_data: str) -> str:
-    """Trích xuất đường dẫn đầu tiên từ chuỗi sự kiện kéo thả của TkDND."""
+def parse_dropped_files(raw_data: str, root: tk.Tk = None) -> list:
+    """Trích xuất danh sách đường dẫn từ chuỗi sự kiện kéo thả của TkDND."""
     raw = (raw_data or "").strip()
     if not raw:
-        return ""
-    if raw.startswith("{"):
-        m = re.match(r"^\{([^}]+)\}", raw)
-        if m:
-            return m.group(1)
-    return raw.split()[0]
+        return []
+    if root is not None:
+        try:
+            items = list(root.tk.splitlist(raw))
+            if items:
+                return [s.strip().strip('"') for s in items if s and s.strip()]
+        except Exception:
+            pass
+    # Fallback regex cho chuỗi dạng {path 1} {path 2} hoặc path1 path2
+    tokens = re.findall(r"\{([^}]+)\}|(\S+)", raw)
+    return [a or b for a, b in tokens if (a or b)]
+
+
+def parse_dropped_file(raw_data: str) -> str:
+    """Trích xuất đường dẫn đầu tiên từ chuỗi sự kiện kéo thả của TkDND."""
+    files = parse_dropped_files(raw_data)
+    return files[0] if files else ""
 
 
 class MonthlyReportApp:
@@ -55,6 +66,7 @@ class MonthlyReportApp:
         self.root.configure(bg="#F5F7FA")
 
         today = dt.date.today()
+        self.selected_files: list = []
         self.selected_file = tk.StringVar(value="")
         try:
             default_base = core.find_default_base_report()
@@ -112,7 +124,7 @@ class MonthlyReportApp:
 
         self.drop_title = tk.Label(
             self.drop_frame,
-            text="📥  Kéo và thả file báo cáo tuần (.xls / .xlsx / .zip) vào đây\nhoặc bấm vào khung này để chọn file",
+            text="📥  Kéo và thả 1 hoặc nhiều file báo cáo tuần (.xls / .xlsx / .zip) vào đây\nhoặc bấm vào khung này để chọn file",
             bg="#FFFFFF",
             fg="#1F4E78",
             font=("Segoe UI", 10, "bold"),
@@ -136,6 +148,12 @@ class MonthlyReportApp:
             path_row, textvariable=self.selected_file, font=("Segoe UI", 9),
             state="readonly", readonlybackground="#FFFFFF", fg="#1E293B", relief="solid", bd=1,
         ).pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
+        self.browse_multi_btn = tk.Button(
+            path_row, text="Chọn nhiều file...", command=self.browse_weekly_files,
+            bg="#DBEAFE", fg="#1E3A8A", activebackground="#BFDBFE",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, cursor="hand2",
+        )
+        self.browse_multi_btn.pack(side="right", padx=(6, 0))
         self.browse_btn = tk.Button(
             path_row, text="Chọn file...", command=self.browse_weekly_file,
             bg="#E2E8F0", fg="#1E293B", activebackground="#CBD5E1",
@@ -250,24 +268,44 @@ class MonthlyReportApp:
             self.days_var.set(self.week_choices[sidx - 1]["days_count"])
 
     def set_file(self, path: str):
-        path = os.path.abspath(path.strip().strip('"'))
-        if not os.path.isfile(path):
-            messagebox.showwarning("File không hợp lệ", f"Không tìm thấy file:\n{path}")
-            return
-        ext = os.path.splitext(path)[1].lower()
-        if ext not in (".xls", ".xlsx", ".zip"):
-            messagebox.showwarning("Sai định dạng", "Vui lòng chọn file Excel (.xls, .xlsx) hoặc file nén (.zip).")
+        self.set_files([path])
+
+    def set_files(self, paths: list):
+        valid_paths = []
+        for raw_p in paths:
+            p = os.path.abspath(str(raw_p).strip().strip('"'))
+            if not os.path.isfile(p):
+                messagebox.showwarning("File không hợp lệ", f"Không tìm thấy file:\n{p}")
+                return
+            ext = os.path.splitext(p)[1].lower()
+            if ext not in (".xls", ".xlsx", ".zip"):
+                messagebox.showwarning("Sai định dạng", f"File không đúng định dạng (.xls, .xlsx, .zip):\n{os.path.basename(p)}")
+                return
+            if p not in valid_paths:
+                valid_paths.append(p)
+
+        if not valid_paths:
             return
 
-        self.selected_file.set(path)
-        self.drop_title.configure(
-            text=f"📄  Đã chọn: {os.path.basename(path)}\n(Kéo thả file khác hoặc bấm để đổi file)",
-            fg="#0F5132",
-        )
+        self.selected_files = valid_paths
+        if len(valid_paths) == 1:
+            p = valid_paths[0]
+            self.selected_file.set(p)
+            self.drop_title.configure(
+                text=f"📄  Đã chọn: {os.path.basename(p)}\n(Kéo thả file khác hoặc bấm để đổi file)",
+                fg="#0F5132",
+            )
+        else:
+            names = ", ".join(os.path.basename(p) for p in valid_paths)
+            self.selected_file.set(f"[{len(valid_paths)} file] {names}")
+            self.drop_title.configure(
+                text=f"📚  Đã chọn {len(valid_paths)} file dữ liệu (sẽ gộp toàn bộ các tab)\n(Kéo thả hoặc bấm để chọn lại)",
+                fg="#0F5132",
+            )
         self.drop_frame.configure(highlightbackground="#198754")
         self.run_btn.configure(state="normal", bg="#198754", activebackground="#146C43")
 
-        parsed = core.parse_date_range_from_filename(path)
+        parsed = core.parse_date_range_from_filenames(valid_paths)
         if parsed:
             self.year_var.set(parsed["year"])
             self.month_var.set(parsed["month"])
@@ -284,9 +322,9 @@ class MonthlyReportApp:
     def on_drop(self, event):
         self.drop_frame.configure(bg="#FFFFFF")
         self.drop_title.configure(bg="#FFFFFF")
-        path = parse_dropped_file(event.data)
-        if path:
-            self.set_file(path)
+        paths = parse_dropped_files(event.data, root=self.root)
+        if paths:
+            self.set_files(paths)
 
     def browse_weekly_file(self):
         path = filedialog.askopenfilename(
@@ -296,7 +334,17 @@ class MonthlyReportApp:
             filetypes=[("Excel & ZIP files", "*.xls *.xlsx *.zip"), ("All files", "*.*")],
         )
         if path:
-            self.set_file(path)
+            self.set_files([path])
+
+    def browse_weekly_files(self):
+        paths = filedialog.askopenfilenames(
+            parent=self.root,
+            title="Chọn nhiều file báo cáo (gộp toàn bộ các tab)",
+            initialdir=ROOT_DIR,
+            filetypes=[("Excel & ZIP files", "*.xls *.xlsx *.zip"), ("All files", "*.*")],
+        )
+        if paths:
+            self.set_files(list(paths))
 
     def browse_base_file(self):
         path = filedialog.askopenfilename(
@@ -309,9 +357,13 @@ class MonthlyReportApp:
             self.base_file.set(os.path.abspath(path))
 
     def start_processing(self):
-        report_path = self.selected_file.get()
-        if not report_path or not os.path.isfile(report_path):
-            messagebox.showwarning("Chưa chọn file", "Vui lòng chọn file dữ liệu tuần.")
+        report_paths = list(self.selected_files)
+        if not report_paths:
+            single = self.selected_file.get()
+            if single and os.path.isfile(single):
+                report_paths = [single]
+        if not report_paths or not all(os.path.isfile(p) for p in report_paths):
+            messagebox.showwarning("Chưa chọn file", "Vui lòng chọn ít nhất 1 file dữ liệu tuần.")
             return
         base_path = self.base_file.get()
         if not base_path or not os.path.isfile(base_path):
@@ -325,12 +377,14 @@ class MonthlyReportApp:
 
         self.run_btn.configure(state="disabled", text="⏳  ĐANG XỬ LÝ VÀ TẠO BÁO CÁO...")
         self.browse_btn.configure(state="disabled")
+        self.browse_multi_btn.configure(state="disabled")
         self.browse_base_btn.configure(state="disabled")
         self.status_var.set("Đang đọc dữ liệu, chuyển mã Unicode và tạo báo cáo tháng...")
 
+        weekly_arg = report_paths[0] if len(report_paths) == 1 else report_paths
         threading.Thread(
             target=self._worker,
-            args=(report_path, base_path, y, m, sidx, days),
+            args=(weekly_arg, base_path, y, m, sidx, days),
             daemon=True,
         ).start()
 
@@ -360,6 +414,7 @@ class MonthlyReportApp:
     def _on_error(self, err_msg: str):
         self.run_btn.configure(state="normal", text="▶   TỔNG HỢP VÀ MỞ BÁO CÁO THÁNG")
         self.browse_btn.configure(state="normal")
+        self.browse_multi_btn.configure(state="normal")
         self.browse_base_btn.configure(state="normal")
         self.status_var.set("Có lỗi xảy ra khi xử lý.")
         messagebox.showerror("Lỗi khi xử lý báo cáo", err_msg)

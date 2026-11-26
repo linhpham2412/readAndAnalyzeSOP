@@ -26,7 +26,7 @@ import tempfile
 import unicodedata
 import zipfile
 from collections import OrderedDict, defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import openpyxl
@@ -351,10 +351,74 @@ def _match_slot_from_label(label: str, slots: List[dict]) -> Optional[int]:
 # --------------------------------------------------------------------------------------
 # ĐỌC FILE BÁO CÁO TUẦN (XLS / XLSX / ZIP) + CHUYỂN FONT UNICODE
 # --------------------------------------------------------------------------------------
-def _read_single_excel(path: str, harvest_texts: List[str]) -> pd.DataFrame:
-    df, _ = knh.load_weekly_report(path)
+_STD_COLS = ["ngay", "so_ct", "ma_kh", "ten_kh", "dia_chi", "ma_hh", "ten_hh", "dvt", "sl", "gia", "tien"]
+_ALT_MAP = {
+    "ten_nhom": "ten_kh",
+    "chi_tieu": "ma_kh",
+    "ma_vt": "ma_hh",
+    "ten_vt": "ten_hh",
+    "dv_tv": "dvt",
+    "dv_vt": "dvt",
+    "so_luong": "sl",
+    "thanh_tien": "tien",
+}
+
+
+def _find_header_row(raw_df: pd.DataFrame) -> int:
+    """Tìm dòng tiêu đề trong 15 dòng đầu của sheet (hỗ trợ sheet có dòng GHI CHÚ ở trên)."""
+    for idx in range(min(15, len(raw_df))):
+        vals = [str(v).strip().lower() for v in raw_df.iloc[idx].tolist() if pd.notna(v)]
+        if not vals:
+            continue
+        if {"chi_tieu", "ma_vt", "so_luong"} <= set(vals):
+            return idx
+        has_kh = any(("kh" in v and ("m·" in v or "mã" in v or "ma " in v or "ma_" in v)) for v in vals)
+        has_hh = any(("hh" in v or "vt" in v) and ("m·" in v or "mã" in v or "ma " in v or "ma_" in v) for v in vals)
+        has_ngay = any("ng" in v and "ct" in v for v in vals)
+        if (has_kh and has_hh) or (has_ngay and has_kh):
+            return idx
+    return 0
+
+
+def _normalize_sheet_df(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Chuẩn hóa DataFrame của 1 sheet về đúng 11 cột chuẩn giống file 05 - 11.10.xls."""
+    if df is None or df.empty:
+        return None
+    norm = {c: str(c).strip().lower() for c in df.columns}
+    if {"chi_tieu", "ma_vt", "so_luong"} <= set(norm.values()):
+        df = df.rename(columns={c: _ALT_MAP[n] for c, n in norm.items() if n in _ALT_MAP})
+        for col in ("ngay", "so_ct", "dia_chi", "gia", "dvt", "tien"):
+            if col not in df.columns:
+                df[col] = None
+        df = df[_STD_COLS].copy()
+    else:
+        if df.shape[1] < 11:
+            return None
+        df = df.iloc[:, :11].copy()
+        df.columns = _STD_COLS
+
+    df = df[df["ma_kh"].notna() & df["ma_hh"].notna()].copy()
+    if df.empty:
+        return None
+
     df["ma_kh"] = df["ma_kh"].map(norm_code)
+    df["ma_hh"] = df["ma_hh"].apply(
+        lambda v: str(int(v)) if isinstance(v, (int, float)) and not pd.isna(v) and float(v).is_integer() else str(v).strip()
+    )
+    df = df[(df["ma_kh"] != "") & (df["ma_hh"] != "")].copy()
+    if df.empty:
+        return None
+
+    df["so_ct"] = df["so_ct"].apply(lambda v: "" if pd.isna(v) else str(v).strip())
+    df["sl"] = pd.to_numeric(df["sl"], errors="coerce").fillna(0.0)
+    df["gia"] = pd.to_numeric(df["gia"], errors="coerce").fillna(0.0)
     df["tien"] = pd.to_numeric(df["tien"], errors="coerce").fillna(0.0)
+    df["ngay"] = pd.to_datetime(df["ngay"], errors="coerce")
+    return df
+
+
+def _decode_vietnamese_df(df: pd.DataFrame, label: str, harvest_texts: List[str]) -> pd.DataFrame:
+    """Chuyển font cũ (TCVN3/VNI/...) sang Unicode NFC và khôi phục dấu tiếng Việt nếu cần."""
     df["ten_kh_goc"] = df["ten_kh"]
     df["ten_hh_goc"] = df["ten_hh"]
 
@@ -364,7 +428,7 @@ def _read_single_excel(path: str, harvest_texts: List[str]) -> pd.DataFrame:
         sample.extend(list(df[c].dropna().unique())[:5000])
     enc = detect_encoding(sample)
     if enc != "unicode":
-        print(f"  [{os.path.basename(path)}] Phát hiện bảng mã cũ: {enc.upper()} -> chuyển sang Unicode NFC")
+        print(f"  [{label}] Phát hiện bảng mã cũ: {enc.upper()} -> chuyển sang Unicode NFC")
     for c in cols:
         df[c] = df[c].map(lambda v: to_unicode(v, enc))
     if enc in ("unicode", "vnsans"):
@@ -375,39 +439,124 @@ def _read_single_excel(path: str, harvest_texts: List[str]) -> pd.DataFrame:
     return df
 
 
+def _read_single_excel(path: str, harvest_texts: List[str]) -> pd.DataFrame:
+    """Đọc tất cả các tab (sheet) trong 1 file Excel, chuẩn hóa về 11 cột chuẩn và loại bỏ dòng trùng giữa các tab trong cùng file."""
+    xl = pd.ExcelFile(path)
+    sheet_frames = []
+    seen_in_prev_sheets = set()
+    fname = os.path.basename(path)
+
+    for sheet_name in xl.sheet_names:
+        raw_df = xl.parse(sheet_name, header=None)
+        if raw_df.empty:
+            continue
+        hdr_idx = _find_header_row(raw_df)
+        df_sheet = xl.parse(sheet_name, header=hdr_idx)
+        df_norm = _normalize_sheet_df(df_sheet)
+        if df_norm is None or df_norm.empty:
+            continue
+
+        # Loại bỏ các dòng đã xuất hiện ở tab trước trong cùng 1 file (tránh đếm trùng giữa tab tổng hợp và tab trạm)
+        if seen_in_prev_sheets:
+            keep_mask = []
+            sheet_keys = []
+            for row in df_norm.itertuples(index=False):
+                ngay_k = row.ngay.strftime("%Y-%m-%d") if pd.notna(row.ngay) else ""
+                k = (ngay_k, row.so_ct, row.ma_kh, row.ma_hh, round(float(row.sl), 4), round(float(row.tien), 2))
+                sheet_keys.append(k)
+                keep_mask.append(k not in seen_in_prev_sheets)
+            df_norm = df_norm[keep_mask].copy()
+            seen_in_prev_sheets.update(sheet_keys)
+        else:
+            for row in df_norm.itertuples(index=False):
+                ngay_k = row.ngay.strftime("%Y-%m-%d") if pd.notna(row.ngay) else ""
+                seen_in_prev_sheets.add(
+                    (ngay_k, row.so_ct, row.ma_kh, row.ma_hh, round(float(row.sl), 4), round(float(row.tien), 2))
+                )
+
+        if df_norm.empty:
+            continue
+
+        df_norm = _decode_vietnamese_df(df_norm, f"{fname}:{sheet_name}", harvest_texts)
+        sheet_frames.append(df_norm)
+
+    if not sheet_frames:
+        raise ValueError(
+            f"Không đọc được dữ liệu hợp lệ từ file: {fname} "
+            "(cần >= 11 cột: Ngày CT, Số CT, Mã KH, Tên KH, Địa chỉ, Mã HH, Tên HH, ĐVT, Số lượng, Giá, Số tiền)"
+        )
+
+    return pd.concat(sheet_frames, ignore_index=True)
+
+
+def parse_date_range_from_filenames(paths: Sequence[str], default_year: Optional[int] = None) -> Optional[dict]:
+    """Nhận diện khoảng ngày/tháng/năm từ 1 hoặc nhiều tên file báo cáo tuần."""
+    if not paths:
+        return None
+    if len(paths) == 1:
+        return parse_date_range_from_filename(paths[0], default_year=default_year)
+
+    parsed_dates: List[dt.date] = []
+    for p in paths:
+        info = parse_date_range_from_filename(p, default_year=default_year)
+        if info and "slot" in info:
+            # Nếu tên file chỉ có 1 ngày (dd.mm), parse trực tiếp khoảng ngày từ tên file
+            name = os.path.splitext(os.path.basename(p))[0]
+            yr = info["year"]
+            m_single = re.search(r"(\d{1,2})\s*[./]\s*(\d{1,2})(?:\s*[./]\s*(\d{4}))?", name)
+            if m_single:
+                d1, mm, yy = m_single.groups()
+                try:
+                    parsed_dates.append(dt.date(int(yy or yr), int(mm), int(d1)))
+                    continue
+                except ValueError:
+                    pass
+            parsed_dates.append(info["slot"]["start"])
+            parsed_dates.append(info["slot"]["end"])
+
+    if not parsed_dates:
+        return None
+    return _match_slot_from_dates(min(parsed_dates), max(parsed_dates))
+
+
 def load_weekly_inputs(
-    input_path: str,
+    input_path: Union[str, Sequence[str]],
     harvest_texts: List[str],
     target_year: Optional[int] = None,
     target_month: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, dict]:
     """
-    Đọc 1 file Excel (.xls/.xlsx) hoặc file .zip chứa các file Excel.
+    Đọc 1 hoặc nhiều file Excel (.xls/.xlsx) — lấy toàn bộ các tab — hoặc file .zip chứa các file Excel.
     Nếu truyền target_year & target_month và dữ liệu có cột ngày ('ngay'),
     tự động lọc bỏ các dòng không thuộc tháng được chọn (vd tuần đầu/cuối tháng vắt sang tháng khác).
     Trả về (DataFrame tổng hợp, dict pivot & thống kê theo mã NQ).
     """
-    ext = os.path.splitext(input_path)[1].lower()
+    paths = [input_path] if isinstance(input_path, str) else list(input_path)
+    if not paths:
+        raise ValueError("Chưa có file báo cáo tuần nào được chọn.")
+
     frames = []
-    if ext == ".zip":
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(input_path, "r") as zf:
-                members = [
-                    n for n in zf.namelist()
-                    if not n.endswith("/")
-                    and "__MACOSX" not in n
-                    and not os.path.basename(n).startswith("~$")
-                    and os.path.splitext(n)[1].lower() in (".xls", ".xlsx")
-                ]
-                if not members:
-                    raise ValueError(f"Không tìm thấy file .xls / .xlsx nào trong file zip: {input_path}")
-                for member in sorted(members):
-                    extracted = zf.extract(member, tmpdir)
-                    frames.append(_read_single_excel(extracted, harvest_texts))
-    elif ext in (".xls", ".xlsx"):
-        frames.append(_read_single_excel(input_path, harvest_texts))
-    else:
-        raise ValueError(f"Định dạng file không được hỗ trợ: {ext} (chỉ nhận .xls, .xlsx, .zip)")
+    for p in paths:
+        ext = os.path.splitext(p)[1].lower()
+        if ext == ".zip":
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(p, "r") as zf:
+                    members = [
+                        n for n in zf.namelist()
+                        if not n.endswith("/")
+                        and "__MACOSX" not in n
+                        and not os.path.basename(n).startswith("~$")
+                        and os.path.splitext(n)[1].lower() in (".xls", ".xlsx")
+                    ]
+                    if not members:
+                        raise ValueError(f"Không tìm thấy file .xls / .xlsx nào trong file zip: {p}")
+                    for member in sorted(members):
+                        extracted = zf.extract(member, tmpdir)
+                        frames.append(_read_single_excel(extracted, harvest_texts))
+        elif ext in (".xls", ".xlsx"):
+            frames.append(_read_single_excel(p, harvest_texts))
+        else:
+            raise ValueError(f"Định dạng file không được hỗ trợ: {ext} (chỉ nhận .xls, .xlsx, .zip)")
 
     df = pd.concat(frames, ignore_index=True)
 
@@ -2491,7 +2640,7 @@ def find_default_base_report() -> str:
 
 
 def generate_monthly_report(
-    weekly_path: str,
+    weekly_path: Union[str, Sequence[str]],
     base_path: Optional[str] = None,
     year: Optional[int] = None,
     month: Optional[int] = None,
@@ -2503,7 +2652,8 @@ def generate_monthly_report(
     if not base_path:
         base_path = find_default_base_report()
 
-    parsed = parse_date_range_from_filename(weekly_path)
+    weekly_paths = [weekly_path] if isinstance(weekly_path, str) else list(weekly_path)
+    parsed = parse_date_range_from_filenames(weekly_paths)
     if year is None:
         year = parsed["year"] if parsed else dt.date.today().year
     if month is None:
@@ -2702,7 +2852,7 @@ def generate_monthly_report(
 
 def main():
     ap = argparse.ArgumentParser(description="Tổng hợp báo cáo doanh số Nhượng Quyền theo tuần / tháng")
-    ap.add_argument("report", help="File báo cáo tuần (.xls, .xlsx hoặc .zip)")
+    ap.add_argument("report", nargs="+", help="1 hoặc nhiều file báo cáo tuần (.xls, .xlsx hoặc .zip)")
     ap.add_argument("--base", default=None, help="File báo cáo tháng gốc để cộng dồn")
     ap.add_argument("--year", type=int, default=None, help="Năm báo cáo")
     ap.add_argument("--month", type=int, default=None, help="Tháng báo cáo (1-12)")
@@ -2711,8 +2861,9 @@ def main():
     ap.add_argument("--out", default=None, help="Đường dẫn file Excel xuất ra")
     a = ap.parse_args()
 
+    weekly_arg = a.report[0] if len(a.report) == 1 else a.report
     generate_monthly_report(
-        weekly_path=a.report,
+        weekly_path=weekly_arg,
         base_path=a.base,
         year=a.year,
         month=a.month,
