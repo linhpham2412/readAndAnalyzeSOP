@@ -124,8 +124,8 @@ BORDER_CELL = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN
 BORDER_TOTAL = Border(left=THIN_SIDE, right=THIN_SIDE, top=MED_NAVY, bottom=DOUBLE_SIDE)
 
 FMT_INT = "#,##0"
-FMT_DEC = "#,##0.0"
-FMT_PCT = "0.0%"
+FMT_DEC = "#,##0"
+FMT_PCT = "0%"
 FMT_HIDDEN = ";;;"
 
 CHART_COLORS = ["1F4E78", "2E75B6", "ED7D31", "70AD47", "FFC000", "5B9BD5"]
@@ -1151,6 +1151,7 @@ def load_base_workbook_state(base_path: str, year: int, month: int, weekly_info:
         wb_tpl = openpyxl.load_workbook(DEFAULT_TEMPLATE, read_only=True, data_only=True)
         tpl_ds_name = "Ds_nhuong_quyen" if "Ds_nhuong_quyen" in wb_tpl.sheetnames else ("DSNQ" if "DSNQ" in wb_tpl.sheetnames else None)
         if tpl_ds_name:
+            tpl_codes = set()
             ws_tpl = wb_tpl[tpl_ds_name]
             tpl_gn_col = _find_gom_nhom_col(ws_tpl)
             for r in range(2, ws_tpl.max_row + 1):
@@ -1162,6 +1163,7 @@ def load_base_workbook_state(base_path: str, year: int, month: int, weekly_info:
                 if not ma_raw:
                     continue
                 ma = norm_code(ma_raw)
+                tpl_codes.add(ma)
                 act = _parse_bool_active(act_raw)
                 gid = _norm_group_id(gn_raw)
                 if ma in stores:
@@ -1182,20 +1184,12 @@ def load_base_workbook_state(base_path: str, year: int, month: int, weekly_info:
                         "group": gid,
                         "is_new": False,
                     }
+            if tpl_codes:
+                stores = OrderedDict((ma, st) for ma, st in stores.items() if ma in tpl_codes)
         wb_tpl.close()
 
-    # Bổ sung mã NQ có trong file tuần nhưng chưa có trong Ds_nhuong_quyen
-    for ma in sorted(weekly_info["pivot"].keys()):
-        if ma not in stores:
-            stores[ma] = {
-                "ql": NGOAI_DM,
-                "ma": ma,
-                "ten": weekly_info["names"].get(ma, "") or legacy_names.get(ma, "") or ma,
-                "active": True,
-                "kv": legacy_kv.get(ma, "Khác"),
-                "group": "",
-                "is_new": True,
-            }
+    # Chỉ giữ lại các NQ đã lưu trong Ds_nhuong_quyen của BC_TONG_base.xlsx, bỏ qua các mã khác
+    history_rows = [rw for rw in history_rows if len(rw) >= 10 and norm_code(rw[9]) in stores]
 
     stores = _reorder_grouped_stores(stores)
 
@@ -1571,22 +1565,22 @@ def write_du_lieu_tho(wb: openpyxl.Workbook, weekly_info: dict, stores: OrderedD
         _style_cell(ws.cell(idx, 2, ten), font=FONT_DATA, fill=fill, align=Alignment(horizontal="left", vertical="center"))
         _style_cell(ws.cell(idx, 3, ql), font=FONT_DATA, fill=fill, align=Alignment(horizontal="center", vertical="center"))
         _style_cell(ws.cell(idx, 4, kv), font=FONT_DATA, fill=fill, align=Alignment(horizontal="center", vertical="center"))
-        _style_cell(ws.cell(idx, 5, rev.get(ma, 0.0)), font=FONT_DATA, fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 5, round(rev.get(ma, 0.0))), font=FONT_DATA, fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(idx, 6, f"=ROUND(E{idx}*1.04,0)"), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
 
-        _style_cell(ws.cell(idx, 7, p_row.get("1001", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 8, p_row.get("1004", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 9, p_row.get("1003", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 10, p_row.get("1002", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 11, f"=J{idx}/2"), font=FONT_BOLD, fill=fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(idx, 12, p_row.get("1214", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 13, p_row.get("1200", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 14, p_row.get("1203", 0.0)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(idx, 15, p_row.get("1201", 0.0)), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 7, round(p_row.get("1001", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 8, round(p_row.get("1004", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 9, round(p_row.get("1003", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 10, round(p_row.get("1002", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 11, f"=ROUND(J{idx}/2,0)"), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 12, round(p_row.get("1214", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 13, round(p_row.get("1200", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 14, round(p_row.get("1203", 0.0))), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(idx, 15, round(p_row.get("1201", 0.0))), fill=fill, num_fmt=FMT_INT)
 
         for j, code in enumerate(other_codes, start=16):
             val = p_row.get(code, 0.0)
-            _style_cell(ws.cell(idx, j, val if val else 0.0), fill=fill, num_fmt=FMT_DEC if val % 1 else FMT_INT)
+            _style_cell(ws.cell(idx, j, round(val) if val else 0), fill=fill, num_fmt=FMT_INT)
         ws.row_dimensions[idx].height = 19
 
     # Dòng TỔNG CỘNG
@@ -1598,7 +1592,7 @@ def write_du_lieu_tho(wb: openpyxl.Workbook, weekly_info: dict, stores: OrderedD
     _style_cell(ws.cell(tot_row, 4, ""), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL)
     for col_idx in range(5, len(headers) + 1):
         cl = get_column_letter(col_idx)
-        _style_cell(ws.cell(tot_row, col_idx, f"=SUM({cl}2:{cl}{tot_row - 1})"),
+        _style_cell(ws.cell(tot_row, col_idx, f"=ROUND(SUM({cl}2:{cl}{tot_row - 1}),0)"),
                     font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
     ws.row_dimensions[tot_row].height = 22
     ws.freeze_panes = "C2"
@@ -1694,11 +1688,11 @@ def write_supporter_detail_sheet(
     _style_cell(ws.cell(4, 3, "Tổng hợp cửa hàng thuộc quản lý"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL)
     _style_cell(ws.cell(4, 4, ""), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL)
     _style_cell(ws.cell(4, 5, ""), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL)
-    _style_cell(ws.cell(4, 6, f"=IFERROR(AVERAGEIF(F5:F{end_row},\">0\"),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_DEC)
-    _style_cell(ws.cell(4, 7, f"=IFERROR(AVERAGEIF(G5:G{end_row},\">0\"),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_DEC)
+    _style_cell(ws.cell(4, 6, f"=ROUND(IFERROR(AVERAGEIF(F5:F{end_row},\">0\"),0),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
+    _style_cell(ws.cell(4, 7, f"=ROUND(IFERROR(AVERAGEIF(G5:G{end_row},\">0\"),0),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
     for col_idx in range(8, 19):
         cl = get_column_letter(col_idx)
-        _style_cell(ws.cell(4, col_idx, f"=SUM({cl}5:{cl}{end_row})"),
+        _style_cell(ws.cell(4, col_idx, f"=ROUND(SUM({cl}5:{cl}{end_row}),0)"),
                     font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
     ws.row_dimensions[4].height = 24
 
@@ -1732,12 +1726,12 @@ def write_supporter_detail_sheet(
                     fill=fill, align=Alignment(horizontal="center", vertical="center"))
         _style_cell(ws.cell(r, 6, ngay_kd), font=FONT_INPUT, fill=fill, num_fmt=FMT_INT,
                     align=Alignment(horizontal="center", vertical="center"))
-        _style_cell(ws.cell(r, 7, f"=IF(F{r}>0,L{r}/F{r},0)"), font=FONT_BOLD, fill=fill, num_fmt=FMT_DEC)
+        _style_cell(ws.cell(r, 7, f"=ROUND(IF(F{r}>0,L{r}/F{r},0),0)"), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 8, _raw_lookup(raw_col_map["hamburger"], r)), fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 9, _raw_lookup(raw_col_map["hotdog"], r)), fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 10, _raw_lookup(raw_col_map["pita"], r)), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(r, 11, _raw_lookup(raw_col_map["sandwich_phan"], r)), fill=fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(r, 12, f"=SUM(H{r}:K{r})"), font=FONT_BOLD, fill=fill, num_fmt=FMT_DEC)
+        _style_cell(ws.cell(r, 11, _raw_lookup(raw_col_map["sandwich_phan"], r)), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(r, 12, f"=ROUND(SUM(H{r}:K{r}),0)"), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 13, _raw_lookup(raw_col_map["bo_th"], r)), fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 14, _raw_lookup(raw_col_map["mieng_ga"], r)), fill=fill, num_fmt=FMT_INT)
         _style_cell(ws.cell(r, 15, _raw_lookup(raw_col_map["mieng_tom"], r)), fill=fill, num_fmt=FMT_INT)
@@ -1814,22 +1808,22 @@ def write_supporter_detail_sheet(
         fill = FILL_ZEBRA if kr % 2 == 0 else FILL_WHITE
         _style_cell(ws.cell(kr, 2, kv_name), font=FONT_BOLD, fill=fill)
         _style_cell(ws.cell(kr, 3, f'=COUNTIF($D${start_row}:$D${end_row},B{kr})'), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(kr, 4, f'=IFERROR(AVERAGEIFS($G${start_row}:$G${end_row},$D${start_row}:$D${end_row},B{kr},$G${start_row}:$G${end_row},">0"),0)'), fill=fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(kr, 5, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$H${start_row}:$H${end_row})'), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(kr, 6, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$I${start_row}:$I${end_row})'), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(kr, 7, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$J${start_row}:$J${end_row})'), fill=fill, num_fmt=FMT_INT)
-        _style_cell(ws.cell(kr, 8, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$K${start_row}:$K${end_row})'), fill=fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(kr, 9, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$L${start_row}:$L${end_row})'), font=FONT_BOLD, fill=fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(kr, 10, f'=SUMIF($D${start_row}:$D${end_row},B{kr},$Q${start_row}:$Q${end_row})'), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 4, f'=ROUND(IFERROR(AVERAGEIFS($G${start_row}:$G${end_row},$D${start_row}:$D${end_row},B{kr},$G${start_row}:$G${end_row},">0"),0),0)'), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 5, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$H${start_row}:$H${end_row}),0)'), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 6, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$I${start_row}:$I${end_row}),0)'), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 7, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$J${start_row}:$J${end_row}),0)'), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 8, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$K${start_row}:$K${end_row}),0)'), fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 9, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$L${start_row}:$L${end_row}),0)'), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kr, 10, f'=ROUND(SUMIF($D${start_row}:$D${end_row},B{kr},$Q${start_row}:$Q${end_row}),0)'), font=FONT_BOLD, fill=fill, num_fmt=FMT_INT)
 
     kv_end = kv_start + max(1, len(kv_list)) - 1
     kv_tot_row = kv_end + 1
     _style_cell(ws.cell(kv_tot_row, 2, "TỔNG"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL)
     _style_cell(ws.cell(kv_tot_row, 3, f"=SUM(C{kv_start}:C{kv_end})"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
-    _style_cell(ws.cell(kv_tot_row, 4, "=G4"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_DEC)
+    _style_cell(ws.cell(kv_tot_row, 4, "=G4"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
     for j in range(5, 11):
         cl = get_column_letter(j)
-        _style_cell(ws.cell(kv_tot_row, j, f"=SUM({cl}{kv_start}:{cl}{kv_end})"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
+        _style_cell(ws.cell(kv_tot_row, j, f"=ROUND(SUM({cl}{kv_start}:{cl}{kv_end}),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
 
     # 2 Biểu đồ sạch, dễ đọc trên sheet chi tiết
     # Chart 1: Horizontal bar Top 12 cửa hàng theo Doanh thu tuần (bỏ dòng 4 TỔNG)
@@ -1849,7 +1843,7 @@ def write_supporter_detail_sheet(
         height=14.0,
         width=18.5,
         y_num_fmt='#,##0,,',
-        label_num_fmt='#,##0.0,," Tr";;""',
+        label_num_fmt='#,##0,," Tr";;""',
         show_legend=False,
     )
     ws.add_chart(ch1, "T12")
@@ -1885,9 +1879,9 @@ def write_supporter_detail_sheet(
                     align=Alignment(horizontal="center", vertical="center", wrap_text=True))
         ws.column_dimensions[get_column_letter(col_i)].width = cw
 
-    _style_cell(ws.cell(4, 26, f"=SUM(Z{start_row}:Z{end_row})"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_DEC)
-    _style_cell(ws.cell(4, 27, f"=SUM(AA{start_row}:AA{end_row})"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_DEC)
-    _style_cell(ws.cell(4, 28, "=AA4-Z4"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt="+#,##0;-#,##0;0")
+    _style_cell(ws.cell(4, 26, f"=ROUND(SUM(Z{start_row}:Z{end_row}),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
+    _style_cell(ws.cell(4, 27, f"=ROUND(SUM(AA{start_row}:AA{end_row}),0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
+    _style_cell(ws.cell(4, 28, "=ROUND(AA4-Z4,0)"), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt="+#,##0;-#,##0;0")
     _style_cell(ws.cell(4, 29, '=IF(AB4>0,"Tăng (+"&TEXT(AB4,"#,##0")&")",IF(AB4<0,"Giảm ("&TEXT(AB4,"#,##0")&")","Không đổi"))'),
                 font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, align=Alignment(horizontal="center", vertical="center"))
 
@@ -1900,15 +1894,15 @@ def write_supporter_detail_sheet(
         r_fill = _get_group_fill(st.get("group", ""), group_color_map) or (FILL_ZEBRA if r % 2 == 0 else FILL_WHITE)
         if prev_week_label and hist_last_row >= 2:
             prev_banh_f = (
-                f"=SUMIFS('LichSuBaoCao(tong_hop)'!$N$2:$N${hist_last_row},"
+                f"=ROUND(SUMIFS('LichSuBaoCao(tong_hop)'!$N$2:$N${hist_last_row},"
                 f"'LichSuBaoCao(tong_hop)'!$J$2:$J${hist_last_row},B{r},"
-                f"'LichSuBaoCao(tong_hop)'!$D$2:$D${hist_last_row},\"{prev_week_label}\")"
+                f"'LichSuBaoCao(tong_hop)'!$D$2:$D${hist_last_row},\"{prev_week_label}\"),0)"
             )
         else:
             prev_banh_f = "=0"
-        _style_cell(ws.cell(r, 26, prev_banh_f), fill=r_fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(r, 27, f"=L{r}"), font=FONT_BOLD, fill=r_fill, num_fmt=FMT_DEC)
-        _style_cell(ws.cell(r, 28, f"=AA{r}-Z{r}"), font=FONT_BOLD, fill=r_fill, num_fmt="+#,##0;-#,##0;0")
+        _style_cell(ws.cell(r, 26, prev_banh_f), fill=r_fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(r, 27, f"=L{r}"), font=FONT_BOLD, fill=r_fill, num_fmt=FMT_INT)
+        _style_cell(ws.cell(r, 28, f"=ROUND(AA{r}-Z{r},0)"), font=FONT_BOLD, fill=r_fill, num_fmt="+#,##0;-#,##0;0")
         _style_cell(
             ws.cell(r, 29, f'=IF(AB{r}>0,"Tăng (+"&TEXT(AB{r},"#,##0")&")",IF(AB{r}<0,"Giảm ("&TEXT(AB{r},"#,##0")&")","Không đổi"))'),
             fill=r_fill, align=Alignment(horizontal="center", vertical="center"),
@@ -2014,23 +2008,23 @@ def _write_dashboard_sheet(
             is_curr = (sidx == current_slot_idx)
             row_fill = FILL_GREEN if is_curr else (FILL_ZEBRA if r % 2 == 0 else FILL_WHITE)
             _style_cell(ws.cell(r, 1, sl["label"]), font=FONT_BOLD if is_curr else FONT_DATA, fill=row_fill)
-            _style_cell(ws.cell(r, 2, f"=SUM(C{r}:F{r})"), font=FONT_BOLD, fill=row_fill, num_fmt=FMT_INT)
+            _style_cell(ws.cell(r, 2, f"=ROUND(SUM(C{r}:F{r}),0)"), font=FONT_BOLD, fill=row_fill, num_fmt=FMT_INT)
 
             if level == "supporter":
                 if is_curr:
                     for j, d_col in enumerate(detail_col_for_prod):
-                        fmt = FMT_DEC if prod_keys[j] == "avg" else FMT_INT
                         val_f = None if (prod_keys[j] == "avg" and not has_curr_orders) else f"='{detail_sheet_name}'!{d_col}4"
                         _style_cell(ws.cell(r, 3 + j, val_f),
-                                    font=FONT_BOLD, fill=row_fill, num_fmt=fmt)
+                                    font=FONT_BOLD, fill=row_fill, num_fmt=FMT_INT)
                 else:
-                    saved = {} if reset_month else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
+                    saved = {} if (reset_month or sidx > current_slot_idx) else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
                     for j, pk in enumerate(prod_keys):
                         val = saved.get(pk, 0.0)
                         if pk == "avg":
-                            val = val if val > 0 else None
-                        fmt = FMT_DEC if pk == "avg" else FMT_INT
-                        _style_cell(ws.cell(r, 3 + j, val), font=FONT_DATA, fill=row_fill, num_fmt=fmt)
+                            val = round(val) if val > 0 else None
+                        else:
+                            val = round(val)
+                        _style_cell(ws.cell(r, 3 + j, val), font=FONT_DATA, fill=row_fill, num_fmt=FMT_INT)
             else:
                 # Region / Total: sum or averageIF(>0) từ các sheet con
                 for j, pk in enumerate(prod_keys):
@@ -2042,12 +2036,10 @@ def _write_dashboard_sheet(
                         else:
                             refs = ",".join(f"'{cs}'!{col_l}{r}" for cs in child_sheets)
                             nonz = "+".join(f"IF('{cs}'!{col_l}{r}>0,1,0)" for cs in child_sheets)
-                            f_str = f"=IFERROR(SUM({refs})/({nonz}),0)"
-                        fmt = FMT_DEC
+                            f_str = f"=ROUND(IFERROR(SUM({refs})/({nonz}),0),0)"
                     else:
-                        f_str = "=" + "+".join(f"'{cs}'!{col_l}{r}" for cs in child_sheets)
-                        fmt = FMT_INT
-                    _style_cell(ws.cell(r, 3 + j, f_str), font=FONT_BOLD if is_curr else FONT_DATA, fill=row_fill, num_fmt=fmt)
+                        f_str = "=ROUND(" + "+".join(f"'{cs}'!{col_l}{r}" for cs in child_sheets) + ",0)"
+                    _style_cell(ws.cell(r, 3 + j, f_str), font=FONT_BOLD if is_curr else FONT_DATA, fill=row_fill, num_fmt=FMT_INT)
         else:
             _style_cell(ws.cell(r, 1, ""), fill=FILL_GREY)
             for col_idx in range(2, 12):
@@ -2059,39 +2051,37 @@ def _write_dashboard_sheet(
     for col_idx in range(2, 12):
         cl = get_column_letter(col_idx)
         if col_idx == 7:
-            f_str = f'=IFERROR(AVERAGEIF({cl}4:{cl}9,">0"),0)'
-            fmt = FMT_DEC
+            f_str = f'=ROUND(IFERROR(AVERAGEIF({cl}4:{cl}9,">0"),0),0)'
         else:
-            f_str = f"=SUM({cl}4:{cl}9)"
-            fmt = FMT_INT
-        _style_cell(ws.cell(10, col_idx, f_str), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=fmt)
+            f_str = f"=ROUND(SUM({cl}4:{cl}9),0)"
+        _style_cell(ws.cell(10, col_idx, f_str), font=FONT_BOLD, fill=FILL_ICE, border=BORDER_TOTAL, num_fmt=FMT_INT)
     ws.row_dimensions[10].height = 22
 
     # Row 11: CÙNG KỲ NĂM TRƯỚC
     _style_cell(ws.cell(11, 1, f"THÁNG {month:02d}/{year - 1} (Cùng kỳ)"), font=FONT_BOLD, fill=FILL_WHITE)
-    _style_cell(ws.cell(11, 2, "=SUM(C11:F11)"), font=FONT_BOLD, fill=FILL_WHITE, num_fmt=FMT_INT)
+    _style_cell(ws.cell(11, 2, "=ROUND(SUM(C11:F11),0)"), font=FONT_BOLD, fill=FILL_WHITE, num_fmt=FMT_INT)
     if level == "supporter":
         py = (sup_dash_state or {}).get("prev_year_prod", {})
         for j, pk in enumerate(prod_keys):
-            _style_cell(ws.cell(11, 3 + j, py.get(pk, 0.0)), font=FONT_INPUT, fill=FILL_WHITE,
-                        num_fmt=FMT_DEC if pk == "avg" else FMT_INT)
+            _style_cell(ws.cell(11, 3 + j, round(py.get(pk, 0.0))), font=FONT_INPUT, fill=FILL_WHITE,
+                        num_fmt=FMT_INT)
     else:
         for j, pk in enumerate(prod_keys):
             cl = get_column_letter(3 + j)
             if pk == "avg":
                 refs = ",".join(f"'{cs}'!{cl}11" for cs in child_sheets)
                 nonz = "+".join(f"IF('{cs}'!{cl}11>0,1,0)" for cs in child_sheets)
-                f_str = f"=IFERROR(SUM({refs})/({nonz}),0)"
+                f_str = f"=ROUND(IFERROR(SUM({refs})/({nonz}),0),0)"
             else:
-                f_str = "=" + "+".join(f"'{cs}'!{cl}11" for cs in child_sheets)
+                f_str = "=ROUND(" + "+".join(f"'{cs}'!{cl}11" for cs in child_sheets) + ",0)"
             _style_cell(ws.cell(11, 3 + j, f_str), font=FONT_DATA, fill=FILL_WHITE,
-                        num_fmt=FMT_DEC if pk == "avg" else FMT_INT)
+                        num_fmt=FMT_INT)
 
     # Row 12: TỶ LỆ SO CÙNG KỲ
     _style_cell(ws.cell(12, 1, "TỶ LỆ SO CÙNG KỲ (%)"), font=FONT_SUBHDR, fill=FILL_ZEBRA)
     for col_idx in range(2, 12):
         cl = get_column_letter(col_idx)
-        _style_cell(ws.cell(12, col_idx, f"=IFERROR({cl}10/{cl}11,0)"), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_PCT)
+        _style_cell(ws.cell(12, col_idx, f"=ROUND(IFERROR({cl}10/{cl}11,0),2)"), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_PCT)
 
     # ---- BẢNG 2: DOANH THU, MỤC TIÊU & THU HỒI CÔNG NỢ (Row 14..18) ----
     _style_cell(ws.cell(14, 1, "CHỈ TIÊU TÀI CHÍNH"), font=FONT_HDR, fill=FILL_SUBHDR,
@@ -2128,15 +2118,15 @@ def _write_dashboard_sheet(
                 if is_curr:
                     _style_cell(ws.cell(15, col_idx, f"='{detail_sheet_name}'!Q4"), font=FONT_BOLD, fill=FILL_GREEN, num_fmt=FMT_INT)
                 else:
-                    saved_w = {} if reset_month else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
-                    _style_cell(ws.cell(15, col_idx, saved_w.get("rev", 0.0)), font=FONT_DATA, num_fmt=FMT_INT)
+                    saved_w = {} if (reset_month or sidx > current_slot_idx) else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
+                    _style_cell(ws.cell(15, col_idx, round(saved_w.get("rev", 0.0))), font=FONT_DATA, num_fmt=FMT_INT)
             else:
-                f_rev = "=" + "+".join(f"'{cs}'!{cl}15" for cs in child_sheets)
+                f_rev = "=ROUND(" + "+".join(f"'{cs}'!{cl}15" for cs in child_sheets) + ",0)"
                 _style_cell(ws.cell(15, col_idx, f_rev), font=FONT_BOLD if is_curr else FONT_DATA,
                             fill=FILL_GREEN if is_curr else FILL_WHITE, num_fmt=FMT_INT)
 
             # Row 16: % Đạt mục tiêu
-            _style_cell(ws.cell(16, col_idx, f"=IFERROR({cl}15/$I$16,0)"), font=FONT_DATA, num_fmt=FMT_PCT)
+            _style_cell(ws.cell(16, col_idx, f"=ROUND(IFERROR({cl}15/$I$16,0),2)"), font=FONT_DATA, num_fmt=FMT_PCT)
 
             # Row 17: Cùng kỳ theo tuần (nếu có)
             _style_cell(ws.cell(17, col_idx, None), fill=FILL_GREY)
@@ -2147,10 +2137,10 @@ def _write_dashboard_sheet(
                     _style_cell(ws.cell(18, col_idx, f"='{detail_sheet_name}'!R4"),
                                 font=FONT_BOLD, fill=FILL_GREEN, num_fmt=FMT_INT)
                 else:
-                    saved_w = {} if reset_month else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
-                    _style_cell(ws.cell(18, col_idx, saved_w.get("debt", 0.0)), font=FONT_DATA, num_fmt=FMT_INT)
+                    saved_w = {} if (reset_month or sidx > current_slot_idx) else (sup_dash_state or {}).get("weeks", {}).get(sidx, {})
+                    _style_cell(ws.cell(18, col_idx, round(saved_w.get("debt", 0.0))), font=FONT_DATA, num_fmt=FMT_INT)
             else:
-                f_debt = "=" + "+".join(f"'{cs}'!{cl}18" for cs in child_sheets)
+                f_debt = "=ROUND(" + "+".join(f"'{cs}'!{cl}18" for cs in child_sheets) + ",0)"
                 _style_cell(ws.cell(18, col_idx, f_debt), font=FONT_BOLD if is_curr else FONT_DATA,
                             fill=FILL_GREEN if is_curr else FILL_WHITE, num_fmt=FMT_INT)
         else:
@@ -2158,20 +2148,20 @@ def _write_dashboard_sheet(
                 _style_cell(ws.cell(r, col_idx, None), fill=FILL_GREY)
 
     # Col H (Lũy kế) & Col I (Mục tiêu / Tỷ lệ)
-    _style_cell(ws.cell(15, 8, "=SUM(B15:G15)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_INT)
-    _style_cell(ws.cell(15, 9, "=IFERROR(H15/I16,0)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_PCT)
+    _style_cell(ws.cell(15, 8, "=ROUND(SUM(B15:G15),0)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_INT)
+    _style_cell(ws.cell(15, 9, "=ROUND(IFERROR(H15/I16,0),2)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_PCT)
 
-    _style_cell(ws.cell(16, 8, "=IFERROR(H15/I16,0)"), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_PCT)
+    _style_cell(ws.cell(16, 8, "=ROUND(IFERROR(H15/I16,0),2)"), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_PCT)
     if level == "supporter":
         t_rev = (sup_dash_state or {}).get("target_rev", 1_000_000_000)
-        _style_cell(ws.cell(16, 9, t_rev), font=FONT_INPUT, fill=FILL_ZEBRA, num_fmt=FMT_INT)
-        _style_cell(ws.cell(17, 8, (sup_dash_state or {}).get("prev_year_rev", 0.0)), font=FONT_INPUT, num_fmt=FMT_INT)
+        _style_cell(ws.cell(16, 9, round(t_rev)), font=FONT_INPUT, fill=FILL_ZEBRA, num_fmt=FMT_INT)
+        _style_cell(ws.cell(17, 8, round((sup_dash_state or {}).get("prev_year_rev", 0.0))), font=FONT_INPUT, num_fmt=FMT_INT)
     else:
-        _style_cell(ws.cell(16, 9, "=" + "+".join(f"'{cs}'!I16" for cs in child_sheets)), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_INT)
-        _style_cell(ws.cell(17, 8, "=" + "+".join(f"'{cs}'!H17" for cs in child_sheets)), font=FONT_BOLD, num_fmt=FMT_INT)
-    _style_cell(ws.cell(17, 9, "=IFERROR(H15/H17,0)"), font=FONT_BOLD, num_fmt=FMT_PCT)
-    _style_cell(ws.cell(18, 8, "=SUM(B18:G18)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_INT)
-    _style_cell(ws.cell(18, 9, "=IFERROR(H18/H15,0)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_PCT)
+        _style_cell(ws.cell(16, 9, "=ROUND(" + "+".join(f"'{cs}'!I16" for cs in child_sheets) + ",0)"), font=FONT_BOLD, fill=FILL_ZEBRA, num_fmt=FMT_INT)
+        _style_cell(ws.cell(17, 8, "=ROUND(" + "+".join(f"'{cs}'!H17" for cs in child_sheets) + ",0)"), font=FONT_BOLD, num_fmt=FMT_INT)
+    _style_cell(ws.cell(17, 9, "=ROUND(IFERROR(H15/H17,0),2)"), font=FONT_BOLD, num_fmt=FMT_PCT)
+    _style_cell(ws.cell(18, 8, "=ROUND(SUM(B18:G18),0)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_INT)
+    _style_cell(ws.cell(18, 9, "=ROUND(IFERROR(H18/H15,0),2)"), font=FONT_BOLD, fill=FILL_ICE, num_fmt=FMT_PCT)
 
     # ---- BẢNG 3: KPI CỬA HÀNG (LIÊN KẾT CHECKBOX Ds_nhuong_quyen) (Row 20..27) ----
     _style_cell(ws.cell(20, 1, "TRẠNG THÁI CỬA HÀNG (THEO Ds_nhuong_quyen)"), font=FONT_HDR, fill=FILL_NAVY,
@@ -2286,7 +2276,7 @@ def _write_dashboard_sheet(
         y_title="Phần / ngày",
         height=10.2,
         width=15.8,
-        label_num_fmt='0.0;;""',
+        label_num_fmt='0;;""',
         show_legend=False,
     )
     ws.add_chart(c3, "A50")
@@ -2319,6 +2309,7 @@ def write_lich_su_bao_cao(
     year: int,
     month: int,
     prev_week_label: Optional[str],
+    future_labels: Optional[set] = None,
 ) -> int:
     """Ghi sheet LichSuBaoCao(tong_hop): bảo toàn dữ liệu cũ và cập nhật/append tuần đang xử lý."""
     ws = wb.create_sheet("LichSuBaoCao(tong_hop)")
@@ -2336,10 +2327,11 @@ def write_lich_su_bao_cao(
             if len(rw) >= 24 and str(rw[3]) == prev_week_label:
                 prev_rev_by_code[norm_code(rw[9])] = _to_float(rw[23])
 
-    # Xóa các dòng trùng (Năm, Tháng, Nhãn tuần) nếu chạy lại cùng 1 tuần -> idempotent
+    # Xóa các dòng trùng (Năm, Tháng, Nhãn tuần) và các tuần sau tuần đang chọn trong cùng tháng
+    drop_labels = {slot["label"]} | set(future_labels or ())
     filtered_history = [
         rw for rw in existing_history
-        if not (rw[0] == year and rw[1] == month and str(rw[3]) == slot["label"])
+        if not (rw[0] == year and rw[1] == month and str(rw[3]) in drop_labels)
     ]
 
     piv = weekly_info["pivot"]
@@ -2351,18 +2343,18 @@ def write_lich_su_bao_cao(
         p = piv.get(ma, {})
         has_order = ma in piv
         ngay_kd = (days_map.get(ma) or slot["days_count"]) if has_order else 0
-        hb = float(p.get("1001", 0.0))
-        hd = float(p.get("1004", 0.0))
-        pt = float(p.get("1003", 0.0))
-        sw = float(p.get("1002", 0.0)) / 2.0
+        hb = round(float(p.get("1001", 0.0)))
+        hd = round(float(p.get("1004", 0.0)))
+        pt = round(float(p.get("1003", 0.0)))
+        sw = round(float(p.get("1002", 0.0)) / 2.0)
         tot = hb + hd + pt + sw
-        avg = tot / ngay_kd if ngay_kd > 0 else 0.0
-        bo = float(p.get("1214", 0.0))
-        ga = float(p.get("1200", 0.0))
-        tom = float(p.get("1203", 0.0))
-        thit = float(p.get("1201", 0.0))
-        rv = float(round(revs.get(ma, 0.0) * 1.04))
-        debt = float(round(prev_rev_by_code.get(ma, 0.0) * 0.96))
+        avg = round(tot / ngay_kd) if ngay_kd > 0 else 0
+        bo = round(float(p.get("1214", 0.0)))
+        ga = round(float(p.get("1200", 0.0)))
+        tom = round(float(p.get("1203", 0.0)))
+        thit = round(float(p.get("1201", 0.0)))
+        rv = round(revs.get(ma, 0.0) * 1.04)
+        debt = round(prev_rev_by_code.get(ma, 0.0) * 0.96)
         kv_tong = get_kv_tong(st["ql"])
 
         new_rows.append([
@@ -2370,7 +2362,7 @@ def write_lich_su_bao_cao(
             slot["start_date"].strftime("%Y-%m-%d"), slot["end_date"].strftime("%Y-%m-%d"),
             kv_tong, st["ql"], st["kv"], ma, st["ten"],
             "Có" if st["active"] else "Không",
-            ngay_kd, tot, round(avg, 2),
+            ngay_kd, tot, avg,
             hb, hd, pt, sw, bo, ga, tom, thit, rv, debt,
         ])
 
@@ -2680,6 +2672,11 @@ def generate_monthly_report(
     df, weekly_info = load_weekly_inputs(weekly_path, harvest_texts, target_year=year, target_month=month)
     base_state = load_base_workbook_state(base_path, year, month, weekly_info)
     stores = base_state["stores"]
+    # Chỉ đếm và tổng hợp các NQ đã lưu trong sheet Ds_nhuong_quyen của BC_TONG_base.xlsx
+    allowed_codes = set(stores.keys())
+    df = df[df["ma_kh"].map(norm_code).isin(allowed_codes)].copy()
+    for dkey in ("pivot", "revenue", "days", "names"):
+        weekly_info[dkey] = {k: v for k, v in weekly_info[dkey].items() if norm_code(k) in allowed_codes}
     _apply_group_value_split(stores, weekly_info)
     dash_state = base_state["dash_state"]
     detected_ym = base_state["detected_ym"]
@@ -2710,7 +2707,8 @@ def generate_monthly_report(
     # 1. Ghi Ds_nhuong_quyen, DuLieuTho(tuan_nay), LichSuBaoCao(tong_hop) trước (hoặc sắp xếp lại thứ tự tab sau)
     ds_last_row = write_ds_nhuong_quyen(wb, stores)
     raw_last_data_row, raw_col_map = write_du_lieu_tho(wb, weekly_info, stores)
-    hist_last_row = write_lich_su_bao_cao(wb, existing_history, stores, weekly_info, slot, year, month, prev_week_label)
+    future_labels = {sl["label"] for sl in slots if sl["slot_idx"] > slot_idx}
+    hist_last_row = write_lich_su_bao_cao(wb, existing_history, stores, weekly_info, slot, year, month, prev_week_label, future_labels=future_labels)
 
     # 2. Ghi 5 sheet chi tiết quản lý
     prev_banh_map = {}

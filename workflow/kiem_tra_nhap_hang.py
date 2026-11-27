@@ -188,7 +188,7 @@ def load_ds_nhuong_quyen(root_dir=ROOT):
                 ma_key = _norm_code(ma)
                 ql_str = str(ql).strip() if ql is not None else ""
                 ten_str = str(ten).strip() if ten is not None else ""
-                if ma_key and ql_str and ql_str.lower() != NGOAI_DM.lower():
+                if ma_key and ql_str.lower() != NGOAI_DM.lower():
                     ds_map[ma_key] = (ql_str, ten_str)
         wb.close()
     except Exception:
@@ -415,12 +415,14 @@ def sheet_summary(wb, results, title_info):
     rows = sorted(results.items(), key=lambda kv: (order[kv[1]["status"]], -len(kv[1]["findings"]), kv[0]))
     for i, (ma, r) in enumerate(rows, 1):
         vals = [i, r["ql"], ma, r["ten"], r["status"], len(r["findings"]), findings_bullets(r),
-                r["banh"]["hamburger"], r["banh"]["hotdog"], r["banh"]["pita"], r["banh"]["sandwich"],
-                round(r["nuoc"]["ly_sop"])]
+                round(r["banh"]["hamburger"]), round(r["banh"]["hotdog"]), round(r["banh"]["pita"]),
+                round(r["banh"]["sandwich"]), round(r["nuoc"]["ly_sop"])]
         for j, v in enumerate(vals, 1):
             c = ws.cell(5 + i, j, v)
             c.border = BORDER
             c.alignment = Alignment(wrap_text=True, vertical="top")
+            if j >= 8:
+                c.number_format = "#,##0"
         ws.row_dimensions[5 + i].height = max(15, 15 * len(r["findings"]))
         ws.cell(5 + i, 5).fill = STATUS_FILL[r["status"]]
     ws.freeze_panes = "E6"
@@ -444,17 +446,19 @@ def sheet_matrix(wb, results):
             if p is None or not r["co_don"]:
                 c.value = None
             else:
-                c.value = round(p, 1)
-                c.number_format = '0.0"%"'
+                c.value = round(p)
+                c.number_format = '0"%"'
                 if p < ths[j]:
                     c.fill, c.font = RED, REDFONT
         n = r["nuoc"]
         base = 4 + len(BANH_ITEMS)
         vals = [n["sua"], n["pct_tra"] if n["sua"] > 0 else None, n["duong"], n["cacao"], n["pepsi"], n["pct_ly"]]
         for j, v in enumerate(vals):
-            c = ws.cell(row, base + j, None if v is None or not r["co_don"] else round(v, 1))
+            c = ws.cell(row, base + j, None if v is None or not r["co_don"] else round(v))
             if j == 1 or j == 5:
-                c.number_format = '0.0"%"'
+                c.number_format = '0"%"'
+            else:
+                c.number_format = "#,##0"
             bad = False
             if r["co_don"]:
                 if j in (0, 2, 3, 4) and v == 0:
@@ -480,8 +484,8 @@ def detail_rows(ma, r):
             st = "THIẾU"
         else:
             st = "Đủ"
-        rows.append([r["ql"], ma, r["ten"], g, name, unit, round(r["act"][k], 2), round(r["sop"][k], 2),
-                     None if p is None else round(p, 1), th, st])
+        rows.append([r["ql"], ma, r["ten"], g, name, unit, round(r["act"][k]), round(r["sop"][k]),
+                     None if p is None else round(p), th, st])
     n = r["nuoc"]
     def add(name, unit, a, s, p, th, flag_zero=False):
         if flag_zero and a == 0:
@@ -490,8 +494,8 @@ def detail_rows(ma, r):
             st = "THIẾU"
         else:
             st = "Đủ"
-        rows.append([r["ql"], ma, r["ten"], "Nước", name, unit, round(a, 2), None if s is None else round(s, 2),
-                     None if p is None else round(p, 1), th, st])
+        rows.append([r["ql"], ma, r["ten"], "Nước", name, unit, round(a), None if s is None else round(s),
+                     None if p is None else round(p), th, st])
     add("Sữa bột", "kg", n["sua"], None, None, 0, True)
     add("Trà đen (so với lượng sữa bột)", "kg", n["tra"], n["tra_sop"], n["pct_tra"] if n["sua"] > 0 else None, -20)
     add("Đường", "kg", n["duong"], n["duong_sop"], None, 0, True)
@@ -548,8 +552,8 @@ def sheet_nuoc(wb, results):
         ok = n["pct_ly"] is None or n["pct_ly"] >= TH_NUOC_LY
         vals = [r["ql"], ma, r["ten"], round(n["ly_sop"]), round(lv["Trà sữa"]), round(lv["Cacao"]), round(lv["Pepsi"]),
                 round(lv["Hồng trà chanh"]), round(n["ly_nvl_tong"]),
-                None if n["pct_ly"] is None else round(n["pct_ly"], 1),
-                n["sua"], n["tra"], round(n["tra_sop"], 2), n["duong"], round(n["duong_sop"], 2),
+                None if n["pct_ly"] is None else round(n["pct_ly"]),
+                round(n["sua"]), round(n["tra"]), round(n["tra_sop"]), round(n["duong"]), round(n["duong_sop"]),
                 "Đủ" if ok else "THIẾU"]
         for j, v in enumerate(vals, 1):
             ws.cell(2 + i, j, v).border = BORDER
@@ -580,7 +584,7 @@ def sheet_unknown(wb, df, master, ds_map=None):
             note = "Tên khôi phục tự động từ file mất dấu - cần kiểm tra lại"
         else:
             note = ""
-        for j, v in enumerate([r.ma_kh, ten, int(r.n), float(r.tien) if pd.notna(r.tien) else 0, goc, note], 1):
+        for j, v in enumerate([r.ma_kh, ten, int(r.n), round(float(r.tien)) if pd.notna(r.tien) else 0, goc, note], 1):
             ws.cell(4 + i, j, v)
     return len(g)
 
@@ -764,22 +768,22 @@ def sheet_du_lieu_tho(wb, df, pivot, results, kv_map=None):
         style_cell(ws.cell(idx, 2, ten), font=font_data, fill=fill, align=Alignment(horizontal="left", vertical="center"))
         style_cell(ws.cell(idx, 3, ql), font=font_data, fill=fill, align=Alignment(horizontal="center", vertical="center"))
         style_cell(ws.cell(idx, 4, kv), font=font_data, fill=fill, align=Alignment(horizontal="center", vertical="center"))
-        style_cell(ws.cell(idx, 5, float(rev.get(ma, 0.0))), font=font_data, fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 5, round(float(rev.get(ma, 0.0)))), font=font_data, fill=fill, num_fmt=fmt_int)
         style_cell(ws.cell(idx, 6, f"=ROUND(E{idx}*1.04,0)"), font=font_bold, fill=fill, num_fmt=fmt_int)
 
-        style_cell(ws.cell(idx, 7, p_row.get("1001", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 8, p_row.get("1004", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 9, p_row.get("1003", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 10, p_row.get("1002", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 11, f"=J{idx}/2"), font=font_bold, fill=fill, num_fmt=fmt_dec)
-        style_cell(ws.cell(idx, 12, p_row.get("1214", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 13, p_row.get("1200", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 14, p_row.get("1203", 0.0)), fill=fill, num_fmt=fmt_int)
-        style_cell(ws.cell(idx, 15, p_row.get("1201", 0.0)), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 7, round(p_row.get("1001", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 8, round(p_row.get("1004", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 9, round(p_row.get("1003", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 10, round(p_row.get("1002", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 11, f"=ROUND(J{idx}/2,0)"), font=font_bold, fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 12, round(p_row.get("1214", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 13, round(p_row.get("1200", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 14, round(p_row.get("1203", 0.0))), fill=fill, num_fmt=fmt_int)
+        style_cell(ws.cell(idx, 15, round(p_row.get("1201", 0.0))), fill=fill, num_fmt=fmt_int)
 
         for j, code in enumerate(other_codes, start=16):
             val = p_row.get(code, 0.0)
-            style_cell(ws.cell(idx, j, val if val else 0.0), fill=fill, num_fmt=fmt_dec if val % 1 else fmt_int)
+            style_cell(ws.cell(idx, j, round(val) if val else 0), fill=fill, num_fmt=fmt_int)
         ws.row_dimensions[idx].height = 19
 
     if ordered_codes:
@@ -802,7 +806,7 @@ def sheet_du_lieu_tho(wb, df, pivot, results, kv_map=None):
         for col_idx in range(5, len(headers) + 1):
             cl = get_column_letter(col_idx)
             style_cell(
-                ws.cell(tot_row, col_idx, f"=SUM({cl}2:{cl}{tot_row - 1})"),
+                ws.cell(tot_row, col_idx, f"=ROUND(SUM({cl}2:{cl}{tot_row - 1}),0)"),
                 font=font_bold,
                 fill=fill_ice,
                 border=border_total,
@@ -923,6 +927,13 @@ def process_report(report_path, master_path=DEFAULT_MASTER, out_path=None, per_n
     df, pivot = load_weekly_report(report_path)
     master_goc = load_master(master_path)
     ds_map = load_ds_nhuong_quyen(ROOT)
+    if ds_map:
+        allowed = set(ds_map.keys())
+        df = df[df["ma_kh"].map(_norm_code).isin(allowed)].copy()
+        for k in list(pivot.keys()):
+            if _norm_code(k) not in allowed:
+                del pivot[k]
+        master_goc = OrderedDict((k, v) for k, v in master_goc.items() if _norm_code(k) in allowed)
     df = fix_vietnamese(df, master_path, master_goc)
     master = extend_master(master_goc, df, ds_map=ds_map)
     results = run_check(pivot, master)
